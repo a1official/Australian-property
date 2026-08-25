@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "start_url": "https://www.realestate.com.au/rent/list-1",
+  "crawled_at": "2026-08-10T09:59:27+00:00",
+  "page_count": 1,
+  "max_pages": 2,
+  "stop_reason": "crawl_error",
+  "pages": [
+    {
+      "page_number": 1,
+      "requested_url": "https://www.realestate.com.au/rent/list-1",
+      "final_url": "https://www.realestate.com.au/rent/list-1",
+      "success": false,
+      "status_code": 429,
+      "title": null,
+      "markdown": "\n",
+      "internal_links": [],
+      "external_link_count": 0,
+      "error": "Blocked by anti-bot protection: HTTP 429 Too Many Requests"
+    }
+  ]
+}

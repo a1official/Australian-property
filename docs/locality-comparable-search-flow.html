@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Locality Comparable Search Flow — Parcel Atlas</title>
+  <style>
+    :root{--ink:#172022;--night:#111718;--paper:#f5f2e9;--cream:#fcfbf7;--acid:#d7ff45;--orange:#ff6940;--cyan:#8ce4dd;--muted:#687272;--line:rgba(23,32,34,.15);--display:Georgia,"Times New Roman",serif;--sans:"Avenir Next",Avenir,"Century Gothic",sans-serif;--mono:"Cascadia Mono",Consolas,monospace}*{box-sizing:border-box}html{scroll-behavior:smooth}body{background:var(--paper);color:var(--ink);font-family:var(--sans);margin:0}body:before{background-image:linear-gradient(rgba(23,32,34,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(23,32,34,.035) 1px,transparent 1px);background-size:28px 28px;content:"";inset:0;pointer-events:none;position:fixed}.wrap{margin:auto;max-width:1220px;padding:0 34px;position:relative}.eyebrow{color:var(--orange);font-size:10px;font-weight:800;letter-spacing:.18em;text-transform:uppercase}header{background:var(--night);color:white;overflow:hidden;padding:70px 0 60px;position:relative}header:after{border:1px solid rgba(215,255,69,.5);border-radius:50%;content:"";height:430px;position:absolute;right:-120px;top:-165px;width:430px}.brand{align-items:center;display:flex;font-size:11px;font-weight:700;gap:10px;letter-spacing:.1em;text-transform:uppercase}.brand i{background:var(--acid);display:inline-block;height:21px;transform:rotate(-6deg);width:21px}h1{font-family:var(--display);font-size:clamp(50px,7vw,94px);font-weight:400;letter-spacing:-.07em;line-height:.87;margin:80px 0 24px;max-width:900px;position:relative;z-index:1}h1 em{color:var(--acid);font-style:normal}.intro{color:rgba(255,255,255,.62);font-family:var(--display);font-size:19px;line-height:1.5;max-width:620px}.meta{color:var(--cyan);font-size:10px;letter-spacing:.1em;margin-top:35px;text-transform:uppercase}nav{background:#202c2e}nav .wrap{display:flex;flex-wrap:wrap}nav a{color:rgba(255,255,255,.64);font-size:10px;letter-spacing:.1em;padding:17px 17px 16px 0;text-decoration:none;text-transform:uppercase}nav a:hover{color:var(--acid)}section{padding:70px 0}section+section{border-top:1px solid var(--line)}h2{font-family:var(--display);font-size:42px;font-weight:400;letter-spacing:-.04em;line-height:1;margin:10px 0 18px}h3{font-family:var(--display);font-size:23px;font-weight:400;margin:0}.lead{color:var(--muted);font-family:var(--display);font-size:17px;line-height:1.55;margin:0;max-width:730px}.grid{display:grid;gap:24px;grid-template-columns:1.1fr .9fr;margin-top:33px}.fact{background:var(--cream);border:1px solid var(--line);padding:23px}.fact span{color:var(--muted);display:block;font-size:9px;letter-spacing:.12em;text-transform:uppercase}.fact strong{display:block;font-family:var(--display);font-size:27px;font-weight:400;margin-top:12px}.endpoint{background:var(--ink);color:white;padding:27px}.endpoint h3{color:var(--acid)}.endpoint p{color:rgba(255,255,255,.58);font-size:11px;line-height:1.5}.endpoint code{color:var(--cyan);font-family:var(--mono);font-size:12px;overflow-wrap:anywhere}.flow{border-left:1px solid var(--ink);margin:42px 0 0 21px;padding-left:37px}.step{padding:0 0 40px;position:relative}.step:last-child{padding-bottom:0}.step:before{background:var(--acid);border:3px solid var(--ink);border-radius:50%;content:"";height:15px;left:-46px;position:absolute;top:3px;width:15px}.step span{color:var(--orange);font-size:9px;font-weight:800;letter-spacing:.15em;text-transform:uppercase}.step p{color:var(--muted);font-family:var(--display);font-size:15px;line-height:1.5;margin:8px 0 0;max-width:670px}pre{background:#101718;color:#e5f7f3;font-family:var(--mono);font-size:11px;line-height:1.65;margin:18px 0 0;overflow:auto;padding:22px;white-space:pre}.key{color:#8ce4dd}.str{color:#d7ff45}.num{color:#ffa087}.bool{color:#e5c3ff}.callout{background:#e5f7d0;border-left:5px solid #769523;margin-top:24px;padding:17px 19px}.callout b{font-family:var(--display);font-size:20px;font-weight:400}.callout p{color:#405332;font-size:12px;line-height:1.5;margin:4px 0 0}table{border-collapse:collapse;margin-top:30px;width:100%}th{background:var(--ink);color:white;font-size:9px;letter-spacing:.12em;padding:13px 15px;text-align:left;text-transform:uppercase}td{border-bottom:1px solid var(--line);font-size:12px;padding:15px;vertical-align:top}td:first-child{color:var(--orange);font-family:var(--mono);font-size:11px}tr:nth-child(even) td{background:rgba(255,255,255,.35)}.dark{background:#253235;color:white}.dark h2{color:white}.dark .lead{color:rgba(255,255,255,.62)}.dark table td{border-color:rgba(255,255,255,.12)}.dark table tr:nth-child(even) td{background:rgba(255,255,255,.05)}.dark table td:first-child{color:var(--acid)}.dark .eyebrow{color:var(--cyan)}.weights{display:grid;gap:1px;grid-template-columns:repeat(6,1fr);margin-top:33px}.weight{background:#e9e6dc;min-height:137px;padding:17px}.weight:first-child{background:var(--acid)}.weight strong{display:block;font-family:var(--display);font-size:39px;font-weight:400}.weight span{font-size:9px;line-height:1.35}.weight small{color:var(--muted);display:block;font-size:8px;line-height:1.35;margin-top:11px}.formula{background:var(--ink);color:white;margin-top:30px;padding:30px}.formula strong{color:var(--acid);font-family:var(--display);font-size:26px;font-weight:400}.formula code{color:var(--cyan);display:block;font-family:var(--mono);font-size:13px;line-height:1.8;margin-top:15px}footer{background:#101718;color:rgba(255,255,255,.55);font-size:10px;letter-spacing:.08em;padding:30px 0;text-transform:uppercase}footer strong{color:white}@media(max-width:760px){.wrap{padding:0 20px}header{padding:46px 0}h1{margin-top:55px}section{padding:50px 0}h2{font-size:35px}.grid{grid-template-columns:1fr}.weights{grid-template-columns:repeat(2,1fr)}pre{font-size:9px;padding:16px}.table-scroll{overflow:auto}.table-scroll table{min-width:620px}}
+  </style>
+</head>
+<body>
+  <header><div class="wrap">
+    <div class="brand"><i></i> Parcel Atlas / Technical note</div>
+    <h1>Exact locality in.<br><em>Comparable homes out.</em></h1>
+    <p class="intro">A practical record of how Parcel Atlas uses Cotality locality search to discover, enrich and rank comparable Australian properties.</p>
+    <p class="meta">Live example: 2 Albert Avenue, Broadbeach QLD 4218 · Prepared 19 August 2026</p>
+  </div></header>
+  <nav><div class="wrap"><a href="#reference">Reference</a><a href="#requests">API requests</a><a href="#response">Response</a><a href="#selection">Selection</a><a href="#score">Score</a></div></nav>
+  <main>
+    <section id="reference"><div class="wrap">
+      <p class="eyebrow">01 / resolve the reference property</p><h2>One property establishes the boundary.</h2>
+      <p class="lead">The user selects a validated address. Parcel Atlas loads its CoreLogic location record and reads the nested locality identifier. It does not infer locality from text or postcode.</p>
+      <div class="grid"><div class="endpoint"><h3>Location request</h3><p>Input: validated CoreLogic property ID.</p><code>GET /property-details/au/properties/47872329/location</code><pre>{
+  <span class="key">"singleLine"</span>: <span class="str">"2 Albert Avenue Broadbeach QLD 4218"</span>,
+  <span class="key">"locality"</span>: { <span class="key">"id"</span>: <span class="num">3723</span>, <span class="key">"singleLine"</span>: <span class="str">"Broadbeach QLD 4218"</span> },
+  <span class="key">"street"</span>: { <span class="key">"id"</span>: <span class="num">38135</span> }
+}</pre></div><div class="fact"><span>Search key extracted</span><strong>localityId = 3723</strong><p class="lead" style="font-size:15px;margin-top:12px">All initial candidates must belong to Broadbeach, the exact Cotality locality represented by ID 3723.</p></div></div>
+      <div class="flow"><div class="step"><span>Step 1</span><h3>Address suggestion → property ID</h3><p>The address search endpoint returns a validated CoreLogic property ID.</p></div><div class="step"><span>Step 2</span><h3>Property ID → location record</h3><p>The location endpoint supplies canonical locality, street and postcode identifiers.</p></div><div class="step"><span>Step 3</span><h3>location.locality.id → candidate input</h3><p>The nested value 3723 becomes the geographic input to both candidate endpoints.</p></div></div>
+    </div></section>
+    <section id="requests"><div class="wrap">
+      <p class="eyebrow">02 / retrieve local candidate summaries</p><h2>Two endpoints, one exact locality.</h2><p class="lead">The application calls both sale and rental search. These APIs operate inside the named locality and do not include neighbouring localities.</p>
+      <div class="grid"><div class="endpoint"><h3>On-market sale candidates</h3><p>Request input: locality ID 3723.</p><code>GET /search/au/property/locality/3723/otmForSale</code><p>Live API response: page 0 · 20 records per page · 8,656 total records reported.</p></div><div class="endpoint"><h3>On-market rental candidates</h3><p>Request input: locality ID 3723.</p><code>GET /search/au/property/locality/3723/otmForRent</code><p>Live API response: page 0 · 20 records per page · 58 total records reported.</p></div></div>
+      <div class="callout"><b>Current page size</b><p>The backend sends no page-size parameter. Cotality returns the default first page: 20 sale summaries and 20 rental summaries. The initial merged pool is therefore up to 40 records.</p></div>
+    </div></section>
+    <section id="response"><div class="wrap">
+      <p class="eyebrow">03 / raw candidate response shape</p><h2>HAL response envelope, then property summary.</h2><p class="lead">Both endpoints return this shape. Parcel Atlas reads <code>_embedded.propertySummaryList[].propertySummary</code>.</p>
+      <pre>{
+  <span class="key">"_embedded"</span>: {
+    <span class="key">"propertySummaryList"</span>: [
+      { <span class="key">"propertySummary"</span>: {
+        <span class="key">"id"</span>: <span class="num">3314018</span>,
+        <span class="key">"address"</span>: { <span class="key">"singleLineAddress"</span>: <span class="str">"1/15 Britannia Avenue Broadbeach QLD 4218"</span> },
+        <span class="key">"attributes"</span>: { <span class="key">"bedrooms"</span>: <span class="num">2</span>, <span class="key">"bathrooms"</span>: <span class="num">2</span>, <span class="key">"carSpaces"</span>: <span class="num">2</span>, <span class="key">"landArea"</span>: <span class="num">448</span> },
+        <span class="key">"coordinate"</span>: { <span class="key">"latitude"</span>: <span class="num">-28.02340569</span>, <span class="key">"longitude"</span>: <span class="num">153.43204114</span> },
+        <span class="key">"locationIdentifiers"</span>: { <span class="key">"localityId"</span>: <span class="num">3723</span>, <span class="key">"streetId"</span>: <span class="num">34155</span> },
+        <span class="key">"propertyType"</span>: <span class="str">"UNIT"</span>,
+        <span class="key">"otmForRentDetail"</span>: { <span class="key">"isActiveCampaign"</span>: <span class="bool">true</span>, <span class="key">"priceDescription"</span>: <span class="str">"$800 per week"</span> }
+      }}
+    ]
+  },
+  <span class="key">"page"</span>: { <span class="key">"number"</span>: <span class="num">0</span>, <span class="key">"size"</span>: <span class="num">20</span>, <span class="key">"totalElements"</span>: <span class="num">58</span> }
+}</pre>
+    </div></section>
+    <section class="dark" id="selection"><div class="wrap">
+      <p class="eyebrow">04 / select before enriching</p><h2>Do the economical work first.</h2><p class="lead">Candidate summaries are fast but can be incomplete. Parcel Atlas removes non-useful records, does an inexpensive configuration pre-score, then calls deeper APIs for the strongest candidates.</p>
+      <div class="table-scroll"><table><thead><tr><th>Stage</th><th>Rule</th><th>Result for Broadbeach example</th></tr></thead><tbody><tr><td>1. Merge</td><td>Combine sale and rental first pages.</td><td>Up to 40 candidates</td></tr><tr><td>2. Clean</td><td>Remove duplicate property IDs and the selected reference property.</td><td>Unique candidates only</td></tr><tr><td>3. Pre-score</td><td>Compare type, bedrooms, bathrooms, car spaces and available area fields.</td><td>Configuration-ranked shortlist</td></tr><tr><td>4. Cap</td><td>Select the strongest 12 candidates.</td><td>12 records for enrichment</td></tr><tr><td>5. Enrich</td><td>Load core attributes, additional attributes and location for each shortlisted property.</td><td>Authoritative details for final score</td></tr><tr><td>6. Sort</td><td>Calculate final score and sort descending.</td><td>12 displayed similar homes</td></tr></tbody></table></div>
+    </div></section>
+    <section id="score"><div class="wrap">
+      <p class="eyebrow">05 / final match calculation</p><h2>A transparent 100-point score.</h2><p class="lead">The score is property similarity, not a valuation, ranking or tenant assessment. A missing attribute receives no points rather than an assumed match.</p>
+      <div class="weights"><div class="weight"><strong>35</strong><span>Property type</span><small>Exact match only</small></div><div class="weight"><strong>20</strong><span>Bedrooms</span><small>20 exact · 10 within one</small></div><div class="weight"><strong>15</strong><span>Bathrooms</span><small>15 exact · 7 within one</small></div><div class="weight"><strong>10</strong><span>Car spaces</span><small>10 exact · 5 within one</small></div><div class="weight"><strong>10</strong><span>Floor / land area</span><small>Within 25% of reference</small></div><div class="weight"><strong>10</strong><span>Location</span><small>Distance or locality fallback</small></div></div>
+      <div class="formula"><strong>Location rule</strong><code>if both property coordinates exist → Haversine distance in kilometres
+≤ 0.5 km = 10 · ≤ 1 km = 8 · ≤ 3 km = 6 · ≤ 5 km = 4
+if reference coordinate is unavailable but locality matches = 5
+otherwise = 0</code></div>
+      <div class="grid"><div class="endpoint"><h3>Example: 85 / 100</h3><pre>Reference: UNIT · 1 bed · 1 bath · 1 car
+Candidate: UNIT · 1 bed · 1 bath · 1 car
+
+Type         35
+Bedrooms     20
+Bathrooms    15
+Car spaces   10
+Area          0
+Locality      5   ← reference coordinate unavailable
+──────────────────
+Total        85 / 100</pre></div><div class="fact"><span>Distance fallback in current example</span><strong>Same locality</strong><p class="lead" style="font-size:15px;margin-top:12px">The Broadbeach reference record returned no usable latitude/longitude. The application does not invent a distance and awards only the exact-locality location score.</p></div></div>
+    </div></section>
+  </main>
+  <footer><div class="wrap"><strong>Parcel Atlas</strong> · Locality comparable search flow · Cotality responses are entitlement-dependent and can change over time.</div></footer>
+</body>
+</html>

@@ -1,0 +1,46 @@
+{
+  "entry_url": "https://agent.propertytree.com/",
+  "page": {
+    "final_url_origin": "https://identity.propertytree.com/",
+    "title": "PropertyTree",
+    "authenticated_application_reached": false
+  },
+  "security": {
+    "tokens_or_credentials_saved": false,
+    "api_responses_saved": false,
+    "scope": "browser-delivered JavaScript from approved Property Tree/MRI hosts"
+  },
+  "bundles": [
+    {
+      "filename": "browser-choice-ba173a1ec837.js",
+      "source_url": "https://identity.propertytree.com/js/browser-choice.js?v=uhc6Hsg34D91ZDxacsTXzLzBNuZ4Lj4xS0maHw-fjAE",
+      "sha256": "ba173a1ec837e03f75643c5a72c4d7ccbcc136e6782e3e314b499a1f0f9f8c01",
+      "bytes": 302
+    },
+    {
+      "filename": "ga-events-c9a27c766ff2.js",
+      "source_url": "https://identity.propertytree.com/js/ga-events.js?v=yaJ8dm_y6rL4JyRQyO4Hd_1FfECowrVYFa0y-q4QsQY",
+      "sha256": "c9a27c766ff2eab2f8272450c8ee0777fd457c40a8c2b55815ad32faae10b106",
+      "bytes": 597
+    },
+    {
+      "filename": "google-analytics-1e31662f7581.js",
+      "source_url": "https://identity.propertytree.com/js/google-analytics.js?v=CRCPkIKknRkGSwZKOXTdksYI1m54SIvMJj9t7vy6usI",
+      "sha256": "1e31662f75812f5722ede5342126543c360ed820d8aa8a50851e2a099abfcf98",
+      "bytes": 523
+    },
+    {
+      "filename": "login-inputauto-2bcf2a424e30.js",
+      "source_url": "https://identity.propertytree.com/js/login-inputauto.js?v=K88qQk4w8XtDHYuYDY8YI58YFkM0E2CqTmdoebJZ1Xw",
+      "sha256": "2bcf2a424e30f17b431d8b980d8f18239f181643341360aa4e676879b259d57c",
+      "bytes": 193
+    },
+    {
+      "filename": "site.min-882748ad42af.js",
+      "source_url": "https://identity.propertytree.com/js/site.min.js?v=iCdIrUKv8wzYvH-yB__ID2pF1fGJy7SWezI5CsaQxGs",
+      "sha256": "882748ad42aff30cd8bc7fb207ffc80f6a45d5f189cbb4967b32390ac690c46b",
+      "bytes": 124173
+    }
+  ],
+  "endpoint_candidates": []
+}

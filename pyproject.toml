@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rea-data-pipeline"
+version = "0.1.0"
+description = "Extract and normalize public rental-search data embedded in REA pages."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["beautifulsoup4>=4.12,<5"]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.49,<2"]
+crawl4ai = ["crawl4ai>=0.9,<1"]
+api = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "python-dotenv>=1.0,<2"]
+dev = ["httpx>=0.27,<1", "pytest>=8,<9"]
+proxy = ["python-dotenv>=1.0,<2"]
+
+[project.scripts]
+rea-pipeline = "rea_pipeline.cli:main"
+rea-bulk-crawl = "rea_pipeline.bulk_cli:main"
+crawl4ai-paginate = "crawl4ai_paginator.cli:main"
+core-engine = "engine.cli:main"
+source-scraper = "source_scrapers.cli:main"
+property-tree-assets = "source_scrapers.property_tree_assets:main"
+rea-api = "rea_api.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+rea_api = ["rea_sitemap.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

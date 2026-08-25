@@ -1,0 +1,116 @@
+[
+  {
+    "id": "rent_search",
+    "purpose": "Collect active advertised rental comparables",
+    "entry_url": "https://www.realestate.com.au/",
+    "verified_example": "https://www.realestate.com.au/rent/in-parramatta/list-1",
+    "navigation": "Playwright selects Rent, fills the public location search, submits, and paginates with the visible Next control.",
+    "parser": "BeautifulSoup rendered listing cards",
+    "api_route": "POST /api/v1/jobs/rent-search",
+    "status": "implemented",
+    "attributes": [
+      "listing_id", "canonical_url", "address", "suburb", "state", "postcode",
+      "property_type", "bedrooms", "bathrooms", "parking_spaces",
+      "price_display", "weekly_rent", "collected_at"
+    ]
+  },
+  {
+    "id": "buy_search",
+    "purpose": "Collect active sale listings and advertised prices",
+    "entry_url": "https://www.realestate.com.au/buy",
+    "verified_example": "https://www.realestate.com.au/buy/in-nsw-parramatta-2150/list-1",
+    "navigation": "Playwright uses the Buy search controls and visible pagination.",
+    "parser": "BeautifulSoup rendered sale cards",
+    "api_route": "POST /api/v1/jobs/buy-search",
+    "status": "contract_only",
+    "attributes": [
+      "listing_id", "canonical_url", "address", "property_type", "features",
+      "price_display", "advertised_price_low", "advertised_price_high", "listing_status"
+    ]
+  },
+  {
+    "id": "sold_search",
+    "purpose": "Collect publicly displayed sold comparables",
+    "entry_url": "https://www.realestate.com.au/sold",
+    "verified_example": "https://www.realestate.com.au/sold/list-1",
+    "navigation": "Playwright selects Sold, fills location and filters, then uses visible pagination.",
+    "parser": "BeautifulSoup rendered sold cards",
+    "api_route": "POST /api/v1/jobs/sold-search",
+    "status": "contract_only",
+    "attributes": [
+      "listing_id", "canonical_url", "address", "property_type", "features",
+      "sold_price", "sold_date", "land_size_sqm"
+    ]
+  },
+  {
+    "id": "listing_detail",
+    "purpose": "Enrich one active or sold listing from its public detail page",
+    "entry_url": "https://www.realestate.com.au/property-{type}-{state}-{suburb}-{listing_id}",
+    "verified_example": "https://www.realestate.com.au/property-unit-vic-cheltenham-151330376",
+    "navigation": "Playwright opens a canonical URL obtained from a search card and expands visible sections only.",
+    "parser": "BeautifulSoup rendered detail sections",
+    "api_route": "POST /api/v1/jobs/listing-detail",
+    "status": "contract_only",
+    "attributes": [
+      "listing_id", "address", "price", "bond", "available_date", "features",
+      "building_size_sqm", "land_size_sqm", "inspections", "agency", "description"
+    ]
+  },
+  {
+    "id": "property_profile",
+    "purpose": "Collect publicly displayed off-market property facts and history",
+    "entry_url": "https://www.realestate.com.au/property/{property-path}",
+    "verified_example": "https://www.realestate.com.au/property/unit-310-1-broughton-st-parramatta-nsw-2150",
+    "navigation": "Playwright searches by address and opens the matching public property profile.",
+    "parser": "BeautifulSoup rendered property facts and public history",
+    "api_route": "POST /api/v1/jobs/property-profile",
+    "status": "contract_only",
+    "attributes": [
+      "address", "property_type", "features", "floor_area", "land_area",
+      "public_sale_history", "displayed_rental_estimate", "displayed_value_estimate"
+    ]
+  },
+  {
+    "id": "suburb_profile",
+    "purpose": "Collect suburb rental and sales market statistics",
+    "entry_url": "https://www.realestate.com.au/{state}/{suburb}-{postcode}/",
+    "verified_example": "https://www.realestate.com.au/nsw/parramatta-2150/",
+    "navigation": "Playwright opens a validated suburb profile and selects Buy/Rent and bedroom views.",
+    "parser": "BeautifulSoup rendered market-statistic sections",
+    "api_route": "POST /api/v1/jobs/suburb-profile",
+    "status": "contract_only",
+    "attributes": [
+      "suburb", "state", "postcode", "property_type", "bedrooms", "period",
+      "median_price", "median_weekly_rent", "rental_yield", "days_on_market",
+      "available_count", "sold_or_leased_count", "annual_growth"
+    ]
+  },
+  {
+    "id": "agent_search",
+    "purpose": "Collect public agent directory performance summaries",
+    "entry_url": "https://www.realestate.com.au/find-agent",
+    "verified_example": "https://www.realestate.com.au/find-agent/parramatta-nsw-2150/",
+    "navigation": "Playwright searches the public agent directory by suburb.",
+    "parser": "BeautifulSoup rendered agent cards",
+    "api_route": "POST /api/v1/jobs/agent-search",
+    "status": "contract_only",
+    "attributes": [
+      "agent_name", "agency_name", "rating", "review_count", "properties_sold",
+      "median_sold_price", "median_days_advertised"
+    ]
+  },
+  {
+    "id": "agency_search",
+    "purpose": "Collect public agency directory sales and rent summaries",
+    "entry_url": "https://www.realestate.com.au/find-agency",
+    "verified_example": "https://www.realestate.com.au/find-agency/parramatta-nsw-2150-/",
+    "navigation": "Playwright searches the public agency directory by suburb.",
+    "parser": "BeautifulSoup rendered agency cards",
+    "api_route": "POST /api/v1/jobs/agency-search",
+    "status": "contract_only",
+    "attributes": [
+      "agency_name", "locations", "rating", "review_count", "properties_sold",
+      "properties_leased", "sales_days_advertised", "rent_days_advertised"
+    ]
+  }
+]

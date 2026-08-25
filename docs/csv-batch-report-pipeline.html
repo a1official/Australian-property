@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CSV Batch Pipeline — Parcel Atlas</title>
+  <style>
+    :root{--ink:#172022;--night:#101718;--paper:#f4f1e8;--cream:#fbfaf5;--acid:#d7ff45;--orange:#ff6940;--cyan:#8ce4dd;--fog:#647071;--line:rgba(23,32,34,.16);--serif:Georgia,"Times New Roman",serif;--sans:"Avenir Next",Avenir,"Century Gothic",sans-serif;--mono:"Cascadia Mono",Consolas,monospace}*{box-sizing:border-box}body{background:var(--paper);color:var(--ink);font-family:var(--sans);margin:0}body:before{background-image:linear-gradient(rgba(23,32,34,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(23,32,34,.035) 1px,transparent 1px);background-size:28px 28px;content:"";inset:0;pointer-events:none;position:fixed}.wrap{margin:auto;max-width:1220px;padding:0 34px;position:relative}header{background:var(--night);color:white;overflow:hidden;padding:70px 0 60px;position:relative}header:after{border:1px solid rgba(215,255,69,.45);border-radius:50%;content:"";height:460px;position:absolute;right:-150px;top:-190px;width:460px}.brand{align-items:center;color:var(--cyan);display:flex;font-size:10px;font-weight:800;gap:10px;letter-spacing:.16em;text-transform:uppercase}.brand b{background:var(--acid);color:var(--ink);display:grid;height:24px;place-items:center;transform:rotate(-5deg);width:24px}h1{font-family:var(--serif);font-size:clamp(48px,7vw,94px);font-weight:400;letter-spacing:-.07em;line-height:.86;margin:75px 0 24px;max-width:800px;position:relative;z-index:1}h1 em{color:var(--acid);font-style:normal}.intro{color:rgba(255,255,255,.62);font-family:var(--serif);font-size:19px;line-height:1.5;max-width:650px}.meta{color:var(--cyan);font-size:9px;letter-spacing:.12em;margin-top:34px;text-transform:uppercase}nav{background:#202c2e}nav .wrap{display:flex;flex-wrap:wrap}nav a{color:rgba(255,255,255,.63);font-size:9px;letter-spacing:.12em;padding:17px 18px 16px 0;text-decoration:none;text-transform:uppercase}nav a:hover{color:var(--acid)}section{padding:70px 0}section+section{border-top:1px solid var(--line)}.eyebrow{color:var(--orange);font-size:10px;font-weight:800;letter-spacing:.17em;text-transform:uppercase}h2{font-family:var(--serif);font-size:42px;font-weight:400;letter-spacing:-.045em;line-height:1;margin:10px 0 18px}.lead{color:var(--fog);font-family:var(--serif);font-size:17px;line-height:1.55;margin:0;max-width:760px}.pipeline{display:grid;grid-template-columns:repeat(5,1fr);margin-top:38px}.node{background:var(--cream);border-right:1px solid var(--line);min-height:190px;padding:18px;position:relative}.node:last-child{border-right:0}.node:after{color:var(--orange);content:"→";font-family:var(--serif);font-size:27px;position:absolute;right:-10px;top:78px;z-index:2}.node:last-child:after{content:""}.node span{color:var(--orange);font-family:var(--mono);font-size:9px}.node strong{display:block;font-family:var(--serif);font-size:22px;font-weight:400;line-height:1;margin-top:24px}.node small{color:var(--fog);display:block;font-size:9px;line-height:1.45;margin-top:11px}.grid{display:grid;gap:24px;grid-template-columns:1fr 1fr;margin-top:32px}.surface{background:var(--cream);padding:25px}.surface h3{font-family:var(--serif);font-size:25px;font-weight:400;margin:0}.surface p{color:var(--fog);font-size:12px;line-height:1.5}.route{background:var(--night);color:white;padding:27px}.route h3{color:var(--acid);font-family:var(--serif);font-size:24px;font-weight:400;margin:0}.route p{color:rgba(255,255,255,.57);font-size:11px;line-height:1.5}.route code{color:var(--cyan);font-family:var(--mono);font-size:12px;overflow-wrap:anywhere}pre{background:#101718;color:#e5f7f3;font-family:var(--mono);font-size:11px;line-height:1.65;margin:17px 0 0;overflow:auto;padding:21px;white-space:pre}.key{color:#8ce4dd}.str{color:#d7ff45}.num{color:#ffa087}.bool{color:#e9c8ff}.callout{background:#e7f8d0;border-left:5px solid #7b9a25;margin-top:27px;padding:18px 20px}.callout b{font-family:var(--serif);font-size:20px;font-weight:400}.callout p{color:#46553a;font-size:12px;line-height:1.5;margin:5px 0 0}.dark{background:#253235;color:white}.dark .eyebrow{color:var(--cyan)}.dark h2{color:white}.dark .lead{color:rgba(255,255,255,.6)}table{border-collapse:collapse;margin-top:32px;width:100%}th{background:var(--night);color:white;font-size:9px;letter-spacing:.12em;padding:13px;text-align:left;text-transform:uppercase}td{border-bottom:1px solid rgba(255,255,255,.14);font-size:12px;padding:15px;vertical-align:top}.dark tr:nth-child(even) td{background:rgba(255,255,255,.04)}td:first-child{color:var(--acid);font-family:var(--mono);font-size:10px}.score{display:grid;grid-template-columns:repeat(6,1fr);margin-top:32px}.score div{background:#e9e6dc;border-right:1px solid var(--paper);min-height:115px;padding:17px}.score div:first-child{background:var(--acid)}.score strong{display:block;font-family:var(--serif);font-size:38px;font-weight:400}.score span{font-size:9px}.score small{color:var(--fog);display:block;font-size:8px;line-height:1.4;margin-top:9px}.report{background:var(--night);color:white;margin-top:33px;padding:30px}.report h3{color:var(--acid);font-family:var(--serif);font-size:27px;font-weight:400;margin:0}.report ul{color:rgba(255,255,255,.66);font-family:var(--serif);font-size:15px;line-height:1.7;margin:15px 0 0;padding-left:18px}footer{background:#0a1011;color:rgba(255,255,255,.5);font-size:9px;letter-spacing:.1em;padding:29px 0;text-transform:uppercase}footer strong{color:white}@media(max-width:760px){.wrap{padding:0 20px}header{padding:48px 0}h1{margin-top:55px}section{padding:50px 0}h2{font-size:35px}.pipeline{grid-template-columns:1fr}.node{border-bottom:1px solid var(--line);border-right:0;min-height:110px}.node:after{bottom:-17px;left:24px;right:auto;top:auto;transform:rotate(90deg)}.grid{grid-template-columns:1fr}.score{grid-template-columns:repeat(2,1fr)}pre{font-size:9px;padding:16px}.table-scroll{overflow:auto}.table-scroll table{min-width:680px}}
+  </style>
+</head>
+<body>
+  <header><div class="wrap">
+    <div class="brand"><b>↗</b> Parcel Atlas / Technical workflow</div>
+    <h1>CSV in.<br><em>Evidence reports out.</em></h1>
+    <p class="intro">The Batch reports workspace validates each address before it can consume Cotality property data or generate an HTML report.</p>
+    <p class="meta">Browser-side batch processing · API credentials remain server-side · 20 August 2026</p>
+  </div></header>
+  <nav><div class="wrap"><a href="#input">Input</a><a href="#matching">Matching</a><a href="#approval">Approval</a><a href="#property">Property flow</a><a href="#output">Report output</a></div></nav>
+  <main>
+    <section id="input"><div class="wrap">
+      <p class="eyebrow">01 / upload and validate</p><h2>A CSV creates a row-by-row worklist.</h2>
+      <p class="lead">The file is read in the browser. It must include one address column named <code>address</code>, <code>property address</code>, or <code>full address</code>. Extra columns such as <code>reference_id</code> and <code>report_label</code> are retained in the CSV but are not needed for matching.</p>
+      <div class="grid"><div class="surface"><h3>Sample CSV input</h3><pre>address,reference_id,report_label
+2 Albert Avenue Broadbeach QLD 4218,PROP-001,Broadbeach review
+1 Macquarie Street Sydney NSW 2000,PROP-002,Sydney review
+120 Collins Street Melbourne VIC 3000,PROP-003,Melbourne review</pre></div><div class="surface"><h3>Validation result</h3><p>Blank address rows are ignored. If no accepted address-column header exists, the batch stops and displays a format error before any API request occurs.</p><pre>{
+  <span class="key">"rowNumber"</span>: <span class="num">2</span>,
+  <span class="key">"originalAddress"</span>: <span class="str">"2 Albert Avenue Broadbeach QLD 4218"</span>,
+  <span class="key">"status"</span>: <span class="str">"matching"</span>
+}</pre></div></div>
+    </div></section>
+    <section id="matching"><div class="wrap">
+      <p class="eyebrow">02 / two address checks, in parallel</p><h2>Suggestions provide choices. The matcher provides validation.</h2>
+      <p class="lead">For each CSV row the browser calls two Parcel Atlas routes in parallel. They authenticate to Cotality on the server; credentials and access tokens never reach the CSV uploader or browser JavaScript.</p>
+      <div class="grid"><div class="route"><h3>A. Address Matcher</h3><p>Browser request. This is a GET request, so it has no JSON body; the address is URL encoded in <code>q</code>.</p><code>GET /api/corelogic/match?q=2%20Albert%20Avenue%20Broadbeach%20QLD%204218</code><p>Server-side upstream call:</p><code>GET /search/au/matcher/address?q={address}&amp;clientName=Parcel%20Atlas</code><pre>{
+  <span class="key">"matchDetails"</span>: {
+    <span class="key">"propertyId"</span>: <span class="num">47872329</span>,
+    <span class="key">"matchType"</span>: <span class="str">"E"</span>,
+    <span class="key">"updateIndicator"</span>: <span class="str">"O"</span>,
+    <span class="key">"parsedAddress"</span>: {
+      <span class="key">"houseNumber1"</span>: <span class="str">"2"</span>,
+      <span class="key">"streetName"</span>: <span class="str">"ALBERT"</span>,
+      <span class="key">"localityName1"</span>: <span class="str">"BROADBEACH"</span>,
+      <span class="key">"postCode"</span>: <span class="str">"4218"</span>
+    }
+  }
+}</pre></div><div class="route"><h3>B. Suggest API</h3><p>Browser request. Again this is GET with query text, not JSON body.</p><code>GET /api/corelogic/search?q=2%20Albert%20Avenue%20Broadbeach%20QLD%204218</code><p>Server-side upstream call:</p><code>GET /property/au/v2/suggest.json?q={address}</code><pre>{
+  <span class="key">"suggestions"</span>: [
+    {
+      <span class="key">"propertyId"</span>: <span class="num">47872329</span>,
+      <span class="key">"suggestion"</span>: <span class="str">"2 Albert Avenue Broadbeach QLD 4218"</span>,
+      <span class="key">"suggestionType"</span>: <span class="str">"PROPERTY"</span>
+    }
+  ],
+  <span class="key">"cacheStatus"</span>: <span class="str">"HIT"</span>
+}</pre></div></div>
+      <div class="callout"><b>Authentication detail</b><p>Before any Cotality call, the server requests an access token using <code>POST /access/as/token.oauth2</code> with <code>application/x-www-form-urlencoded</code> client credentials. This token exchange happens only on the server and is not included in browser responses or generated reports.</p></div>
+    </div></section>
+    <section class="dark" id="approval"><div class="wrap">
+      <p class="eyebrow">03 / exact match gate</p><h2>Only exact suggestions are automatically ready.</h2>
+      <p class="lead">The CSV value and each suggestion are compared after normalising case, spaces, punctuation and common street abbreviations such as <code>St → Street</code>. Unit numbers remain significant.</p>
+      <div class="table-scroll"><table><thead><tr><th>Input address</th><th>Returned suggestion</th><th>Batch status</th><th>Action</th></tr></thead><tbody><tr><td>1 Macquarie Street Sydney NSW 2000</td><td>1 Macquarie Street Sydney NSW 2000</td><td>Ready</td><td>Automatically approved; use this property ID.</td></tr><tr><td>2 Albert Avenue Broadbeach QLD 4218</td><td>401/2 Albert Avenue Broadbeach QLD 4218</td><td>Review</td><td>Different unit number; show suggestions for a user to select.</td></tr><tr><td>2 Alber Avnue Broadbech QLD 4218</td><td>2 Albert Avenue Broadbeach QLD 4218</td><td>Review</td><td>Spelling changed; user confirms the candidate.</td></tr><tr><td>Unknown address</td><td>No suggestions</td><td>Unmatched</td><td>No report can be generated.</td></tr></tbody></table></div>
+      <div class="pipeline"><div class="node"><span>01</span><strong>CSV row</strong><small>Original text remains visible.</small></div><div class="node"><span>02</span><strong>Matcher</strong><small>Normalises and validates address components.</small></div><div class="node"><span>03</span><strong>Suggestions</strong><small>Returns selectable CoreLogic property candidates.</small></div><div class="node"><span>04</span><strong>Decision</strong><small>Ready, Review or Unmatched.</small></div><div class="node"><span>05</span><strong>Queue</strong><small>Only Ready rows can be processed.</small></div></div>
+    </div></section>
+    <section id="property"><div class="wrap">
+      <p class="eyebrow">04 / process approved property rows</p><h2>Two protected routes assemble the report evidence.</h2>
+      <p class="lead">The browser runs two approved rows at a time. For each row, it calls the existing property dossier route and the comparable-home route. Both return JSON from server-side Cotality integrations.</p>
+      <div class="grid"><div class="route"><h3>Property dossier request</h3><code>GET /api/corelogic/properties/47872329</code><p>Server runs twenty modules in parallel, including core, additional, location, legal, sales, advertisements, AVMs and imagery.</p><pre>{
+  <span class="key">"propertyId"</span>: <span class="num">47872329</span>,
+  <span class="key">"successfulModules"</span>: <span class="num">16</span>,
+  <span class="key">"totalModules"</span>: <span class="num">20</span>,
+  <span class="key">"modules"</span>: {
+    <span class="key">"core"</span>: { <span class="key">"status"</span>: <span class="num">200</span>, <span class="key">"data"</span>: { <span class="key">"propertyType"</span>: <span class="str">"UNIT"</span>, <span class="key">"beds"</span>: <span class="num">1</span>, <span class="key">"baths"</span>: <span class="num">1</span> } },
+    <span class="key">"location"</span>: { <span class="key">"status"</span>: <span class="num">200</span>, <span class="key">"data"</span>: { <span class="key">"locality"</span>: { <span class="key">"id"</span>: <span class="num">3723</span> } } }
+  }
+}</pre></div><div class="route"><h3>Comparable homes request</h3><code>GET /api/corelogic/properties/47872329/comparables</code><p>Server reads the reference locality ID, calls both locality candidate endpoints, deduplicates, pre-scores, enriches the best twelve, then returns final ranks.</p><pre>{
+  <span class="key">"reference"</span>: {
+    <span class="key">"propertyId"</span>: <span class="num">47872329</span>,
+    <span class="key">"localityId"</span>: <span class="num">3723</span>,
+    <span class="key">"coordinateAvailable"</span>: <span class="bool">false</span>
+  },
+  <span class="key">"candidatePool"</span>: { <span class="key">"discovered"</span>: <span class="num">40</span>, <span class="key">"enriched"</span>: <span class="num">12</span> },
+  <span class="key">"candidates"</span>: [{ <span class="key">"propertyId"</span>: <span class="num">3314445</span>, <span class="key">"distanceKm"</span>: null, <span class="key">"score"</span>: { <span class="key">"total"</span>: <span class="num">85</span> } }]
+}</pre></div></div>
+      <div class="callout"><b>Locality candidate APIs</b><p>For reference locality 3723, the server calls <code>GET /search/au/property/locality/3723/otmForSale</code> and <code>GET /search/au/property/locality/3723/otmForRent</code>. Each default first page returns up to 20 summaries. The merged candidate pool is up to 40 records before the 12-record enrichment cap.</p></div>
+    </div></section>
+    <section id="output"><div class="wrap">
+      <p class="eyebrow">05 / rank and generate standalone report</p><h2>JSON evidence becomes a downloadable HTML file.</h2>
+      <p class="lead">The browser renders the report after both protected API responses arrive. No additional external API request is made to generate the HTML; it is composed locally and downloaded as <code>parcel-atlas-{propertyId}.html</code>.</p>
+      <div class="score"><div><strong>35</strong><span>Type</span><small>Exact type match</small></div><div><strong>20</strong><span>Bedrooms</span><small>Exact or within one</small></div><div><strong>15</strong><span>Bathrooms</span><small>Exact or within one</small></div><div><strong>10</strong><span>Car spaces</span><small>Exact or within one</small></div><div><strong>10</strong><span>Area</span><small>Within 25%</small></div><div><strong>10</strong><span>Location</span><small>Distance or locality</small></div></div>
+      <div class="report"><h3>Report contents</h3><ul><li>Reference address, property ID, locality ID and council.</li><li>Core configuration: type, beds, baths, parking, land and floor area.</li><li>Property imagery if returned by Cotality.</li><li>Consumer AVM, rental AVM, last sale and sale date when returned.</li><li>Every enriched comparable: property ID, configuration, campaign price, area, score and score breakdown.</li><li>Distance in kilometres when reference and candidate coordinates exist; otherwise an explicit “Same locality” fallback note.</li><li>Data module coverage and evidence disclaimer.</li></ul></div>
+    </div></section>
+  </main>
+  <footer><div class="wrap"><strong>Parcel Atlas</strong> · CSV batch report pipeline · Cotality data is entitlement-dependent and no credentials are written to CSV or generated report files.</div></footer>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "start_url": "https://www.realestate.com.au/rent/list-1",
+  "crawled_at": "2026-08-10T10:26:36+00:00",
+  "page_count": 1,
+  "max_pages": 2,
+  "stop_reason": "crawl_error",
+  "pages": [
+    {
+      "page_number": 1,
+      "requested_url": "https://www.realestate.com.au/rent/list-1",
+      "final_url": "https://www.realestate.com.au/rent/list-1",
+      "success": false,
+      "status_code": 429,
+      "title": null,
+      "markdown": "\n",
+      "internal_links": [],
+      "external_link_count": 0,
+      "error": "Blocked by anti-bot protection: HTTP 429 Too Many Requests",
+      "html": "<!DOCTYPE html><html><head></head><body><script>window.KPSDK={};KPSDK.now=typeof performance!=='undefined'&&performance.now?performance.now.bind(performance):Date.now.bind(Date);KPSDK.start=KPSDK.now();</script><script src=\"/149e9513-01fa-4fb0-aad4-566afd725d1b/2d206a39-8ed7-437e-a3be-862e0f06eea3/ips.js?KP_UIDz=0N9G3JEICxZZ7GwdG6Ip5vo5S8eEugGjqOct2yMZbIDf9mcKxtjfZAcgPjpGOVd1mx0HxA97BPcxeUDWIzDqEzpMIcIJECreqew3VqmYdDJ6Axptn5C2WhePwb06NHeIrUdLrhnWqx5fapAM48SqbbuQgO0wkduq53cgCkWMK6jz&amp;x-kpsdk-im=AAL0G6jH-Zh0ozgrh8lfdgpyBfdgOO0oESQ4v09N6Su4t6cKa7MB0ILZFYY_awgt7-W8g3R3NFC3Ef2asPaxkZF78qXzrzRJkzBXfU3y6eKZbTQI8mJRpAYs5eHd2tyRp0kCJICzA4ZFZ8y0LV4uFCEQThDI9VvRD4I\"></script><iframe src=\"javascript:;\" style=\"display: none;\"></iframe><iframe src=\"javascript:;\" style=\"display: none;\"></iframe></body></html>"
+    }
+  ]
+}
