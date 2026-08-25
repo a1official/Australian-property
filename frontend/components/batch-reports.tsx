@@ -221,7 +221,9 @@ export function BatchReports() {
     const queue = rows.filter((row) => row.status === "ready");
     let cursor = 0;
     async function worker() { while (cursor < queue.length) { const next = queue[cursor++]; await process(next); } }
-    await Promise.all([worker(), worker()]);
+    // Keep batch work deliberately serial so multiple property dossiers do
+    // not burst against the Cotality sandbox rate limit.
+    await worker();
   }
 
   return <section className="batch-reports" id="batch-reports">

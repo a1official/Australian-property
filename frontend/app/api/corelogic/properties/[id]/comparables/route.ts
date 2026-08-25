@@ -1,5 +1,7 @@
 import { corelogicRequest } from "@/lib/corelogic";
 
+export const maxDuration = 60;
+
 type JsonRecord = Record<string, unknown>;
 
 function record(value: unknown): JsonRecord {

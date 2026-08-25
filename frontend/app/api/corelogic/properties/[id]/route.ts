@@ -1,5 +1,7 @@
 import { corelogicRequest } from "@/lib/corelogic";
 
+export const maxDuration = 60;
+
 const modules = {
   core: (id: string) => `/property-details/au/properties/${id}/attributes/core`,
   additional: (id: string) => `/property-details/au/properties/${id}/attributes/additional`,
