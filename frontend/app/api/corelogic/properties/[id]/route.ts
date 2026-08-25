@@ -25,14 +25,27 @@ const modules = {
   images: (id: string) => `/property-details/au/properties/${id}/images`,
 } as const;
 
-export async function GET(_request: Request, context: RouteContext<"/api/corelogic/properties/[id]">) {
+type ModuleName = keyof typeof modules;
+const moduleScopes: Record<string, ModuleName[]> = {
+  overview: ["core", "additional", "location", "lastSale", "forSale", "forRent", "avm", "rentalAvm", "images"],
+  market: ["lastSale", "sales", "forSale", "forRent", "onMarketSales", "onMarketRent"],
+  legal: ["legal", "contacts", "occupancy", "developmentApplications", "site"],
+  intelligence: ["features", "sales", "onMarketSales", "onMarketRent", "statistics", "site"],
+  all: Object.keys(modules) as ModuleName[],
+};
+
+export async function GET(request: Request, context: RouteContext<"/api/corelogic/properties/[id]">) {
   const { id } = await context.params;
   if (!/^\d{1,14}$/.test(id)) {
     return Response.json({ detail: "Invalid CoreLogic property identifier." }, { status: 400 });
   }
 
+  const scope = new URL(request.url).searchParams.get("scope") || "overview";
+  const selectedModules = moduleScopes[scope];
+  if (!selectedModules) return Response.json({ detail: "Invalid property-data scope." }, { status: 400 });
+
   const entries = await Promise.all(
-    Object.entries(modules).map(async ([name, path]) => [name, await corelogicRequest(path(id))] as const),
+    selectedModules.map(async (name) => [name, await corelogicRequest(modules[name](id))] as const),
   );
   const data = Object.fromEntries(entries);
   const successfulModules = entries.filter(([, result]) => result.ok).length;
@@ -41,9 +54,11 @@ export async function GET(_request: Request, context: RouteContext<"/api/corelog
   return Response.json(
     {
       propertyId: Number(id),
+      scope,
       generatedAt: new Date().toISOString(),
       successfulModules,
       totalModules: entries.length,
+      availableModules: Object.keys(modules).length,
       cache: { hits: cacheHits, misses: entries.length - cacheHits, ttlSeconds: 300 },
       modules: data,
     },

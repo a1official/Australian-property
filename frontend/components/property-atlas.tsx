@@ -53,9 +53,11 @@ type ModuleResult = {
 
 type Profile = {
   propertyId: number;
+  scope?: string;
   generatedAt: string;
   successfulModules: number;
   totalModules: number;
+  availableModules?: number;
   cache?: { hits: number; misses: number; ttlSeconds: number };
   modules: Record<string, ModuleResult>;
 };
@@ -199,6 +201,8 @@ export function PropertyAtlas() {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
   const requestSequence = useRef(0);
+  const loadedScopes = useRef(new Set<string>());
+  const loadingScopes = useRef(new Set<string>());
 
   async function searchAddress(value = query) {
     const cleaned = value.trim();
@@ -240,12 +244,14 @@ export function PropertyAtlas() {
     setComparablesError(null);
     setError(null);
     setTab("overview");
+    loadedScopes.current.clear();
+    loadingScopes.current.clear();
     try {
       const payload = await responseJson<Profile>(
         await fetch(`/api/corelogic/properties/${propertyId}`),
       );
       setProfile(payload);
-      void loadComparables(propertyId);
+      loadedScopes.current.add("overview");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The property profile could not be loaded.");
     } finally {
@@ -264,6 +270,48 @@ export function PropertyAtlas() {
     } finally {
       setLoadingComparables(false);
     }
+  }
+
+  async function loadProfileScope(propertyId: number, scope: "market" | "legal" | "intelligence" | "all") {
+    if (loadedScopes.current.has(scope) || loadingScopes.current.has(scope)) return;
+    loadingScopes.current.add(scope);
+    try {
+      const payload = await responseJson<Profile>(await fetch(`/api/corelogic/properties/${propertyId}?scope=${scope}`));
+      setProfile((current) => {
+        if (!current || current.propertyId !== propertyId) return current;
+        const modules = { ...current.modules, ...payload.modules };
+        const cacheHits = (current.cache?.hits || 0) + (payload.cache?.hits || 0);
+        const cacheMisses = (current.cache?.misses || 0) + (payload.cache?.misses || 0);
+        return {
+          ...payload,
+          modules,
+          successfulModules: Object.values(modules).filter((module) => module.ok).length,
+          totalModules: Object.keys(modules).length,
+          cache: { hits: cacheHits, misses: cacheMisses, ttlSeconds: payload.cache?.ttlSeconds || current.cache?.ttlSeconds || 300 },
+        };
+      });
+      loadedScopes.current.add(scope);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Additional property evidence could not be loaded.");
+    } finally {
+      loadingScopes.current.delete(scope);
+    }
+  }
+
+  function changeTab(nextTab: Tab, propertyId: number) {
+    setTab(nextTab);
+    if (nextTab === "comparables" && !comparables && !loadingComparables) {
+      void loadComparables(propertyId);
+    }
+    const scopeByTab: Partial<Record<Tab, "market" | "legal" | "intelligence" | "all">> = {
+      market: "market",
+      legal: "legal",
+      intelligence: "intelligence",
+      sources: "all",
+      data: "all",
+    };
+    const scope = scopeByTab[nextTab];
+    if (scope) void loadProfileScope(propertyId, scope);
   }
 
   function submit(event: FormEvent) {
@@ -354,7 +402,7 @@ export function PropertyAtlas() {
       <section className="profile-stage" id="profile">
         {!selected && !loadingProfile ? <EmptyProfile /> : null}
         {loadingProfile && selected ? <LoadingProfile address={selected.suggestion} /> : null}
-        {selected && profile ? <PropertyDossier selected={selected} profile={profile} tab={tab} setTab={setTab} comparables={comparables} loadingComparables={loadingComparables} comparablesError={comparablesError} retryComparables={() => void loadComparables(profile.propertyId)} /> : null}
+        {selected && profile ? <PropertyDossier selected={selected} profile={profile} tab={tab} onTabChange={(nextTab) => changeTab(nextTab, profile.propertyId)} comparables={comparables} loadingComparables={loadingComparables} comparablesError={comparablesError} retryComparables={() => void loadComparables(profile.propertyId)} /> : null}
       </section>
 
       <BatchReports />
@@ -386,7 +434,7 @@ function LoadingProfile({ address }: { address: string }) {
   </div>;
 }
 
-function PropertyDossier({ selected, profile, tab, setTab, comparables, loadingComparables, comparablesError, retryComparables }: { selected: Suggestion; profile: Profile; tab: Tab; setTab: (tab: Tab) => void; comparables: Comparables | null; loadingComparables: boolean; comparablesError: string | null; retryComparables: () => void }) {
+function PropertyDossier({ selected, profile, tab, onTabChange, comparables, loadingComparables, comparablesError, retryComparables }: { selected: Suggestion; profile: Profile; tab: Tab; onTabChange: (tab: Tab) => void; comparables: Comparables | null; loadingComparables: boolean; comparablesError: string | null; retryComparables: () => void }) {
   const core = record(profile.modules.core?.data);
   const additional = record(profile.modules.additional?.data);
   const location = record(profile.modules.location?.data);
@@ -455,7 +503,7 @@ function PropertyDossier({ selected, profile, tab, setTab, comparables, loadingC
     <ImageGallery images={propertyImages} address={text(location.singleLine, selected.suggestion)} />
 
     <nav className="dossier-tabs" aria-label="Property profile sections">
-      {dossierTabs.map((item, index) => <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => setTab(item.id)}><span>0{index + 1}</span>{item.label}</button>)}
+      {dossierTabs.map((item, index) => <button key={item.id} className={tab === item.id ? "active" : ""} onClick={() => onTabChange(item.id)}><span>0{index + 1}</span>{item.label}</button>)}
     </nav>
 
     {tab === "overview" ? <div className="dossier-overview">
