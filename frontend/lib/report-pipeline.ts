@@ -1,5 +1,5 @@
 /**
- * Node-side report pipeline used by the Render worker.
+ * Node-side report pipeline used by the scheduled worker.
  *
  * Talks to the deployed Vercel API routes over HTTPS, so Cotality credentials
  * stay in one place and the worker needs no browser to build a report. This

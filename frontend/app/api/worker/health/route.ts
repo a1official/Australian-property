@@ -1,4 +1,3 @@
-import { UnauthorizedError, assertJobApiRequest, unauthorizedResponse } from "@/lib/api-auth";
 import { getWorkerHealth } from "@/lib/db";
 
 export const runtime = "nodejs";
@@ -7,9 +6,8 @@ export const maxDuration = 15;
 const STALE_AFTER_SECONDS = 300;
 
 /** Worker liveness derived from the Neon heartbeat table. */
-export async function GET(request: Request) {
+export async function GET() {
   try {
-    assertJobApiRequest(request);
     const workers = await getWorkerHealth();
     const live = workers.filter((worker) => Number(worker.seconds_since_seen ?? Infinity) < STALE_AFTER_SECONDS);
 
@@ -32,7 +30,6 @@ export async function GET(request: Request) {
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
-    if (error instanceof UnauthorizedError) return unauthorizedResponse(error);
     return Response.json(
       { ok: false, error: error instanceof Error ? error.message : "Worker health could not be read." },
       { status: 500 },

@@ -1,13 +1,11 @@
-import { UnauthorizedError, assertJobApiRequest, unauthorizedResponse } from "@/lib/api-auth";
 import { getJobDetails } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const maxDuration = 30;
 
 /** Durable job status read straight from Neon. No Playwright, no Cotality. */
-export async function GET(request: Request, context: RouteContext<"/api/gmail/jobs/[id]">) {
+export async function GET(_request: Request, context: RouteContext<"/api/gmail/jobs/[id]">) {
   try {
-    assertJobApiRequest(request);
     const { id } = await context.params;
     if (!/^[\w-]{1,80}$/.test(id)) {
       return Response.json({ ok: false, error: "Invalid job identifier." }, { status: 400 });
@@ -52,7 +50,6 @@ export async function GET(request: Request, context: RouteContext<"/api/gmail/jo
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
-    if (error instanceof UnauthorizedError) return unauthorizedResponse(error);
     return Response.json(
       { ok: false, error: error instanceof Error ? error.message : "Failed to fetch job details." },
       { status: 500 },

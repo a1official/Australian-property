@@ -1,37 +1,18 @@
 import { randomBytes } from "node:crypto";
 
-import { UnauthorizedError, assertJobApiRequest, unauthorizedResponse } from "@/lib/api-auth";
 import { createJobBlobSecret, uploadCsvBlob } from "@/lib/blob-storage";
-import {
-  CsvValidationError,
-  buildIdempotencyKey,
-  isAllowedSender,
-  validateCsvAttachment,
-} from "@/lib/csv-intake";
+import { CsvValidationError, buildIdempotencyKey, validateCsvAttachment } from "@/lib/csv-intake";
 import { listRecentJobs, registerJobWithAttachment, seedPropertyRows } from "@/lib/db";
 
 export const runtime = "nodejs";
-// Enqueue only. Long Cotality/Playwright work belongs to the Render worker.
+// Enqueue only. Long Cotality/Playwright work belongs to the scheduled worker.
 export const maxDuration = 30;
 
-function allowedSenders(): string[] {
-  return (process.env.GMAIL_ALLOWED_SENDERS || "")
-    .split(",")
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean);
-}
-
-function allowAnySender(): boolean {
-  return process.env.GMAIL_ALLOW_ANY_SENDER === "true";
-}
-
-export async function GET(request: Request) {
+export async function GET() {
   try {
-    assertJobApiRequest(request);
     const jobs = await listRecentJobs(20);
     return Response.json({ ok: true, jobs }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    if (error instanceof UnauthorizedError) return unauthorizedResponse(error);
     return Response.json(
       { ok: false, error: error instanceof Error ? error.message : "Failed to fetch jobs." },
       { status: 500 },
@@ -41,7 +22,6 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    assertJobApiRequest(request);
 
     const body = (await request.json().catch(() => null)) as
       | { filename?: string; csvContent?: string; sender?: string; subject?: string }
@@ -51,11 +31,11 @@ export async function POST(request: Request) {
     }
 
     const sender = (body.sender || "").trim().toLowerCase();
-    // The reply goes to this address, so it must be on the allow-list.
-    if (!isAllowedSender(sender, allowedSenders(), allowAnySender())) {
+    // Demo mode has no allow-list, but a reply address is still required.
+    if (!sender) {
       return Response.json(
-        { ok: false, error: "sender must be a valid email address permitted by the configured intake policy." },
-        { status: 403 },
+        { ok: false, error: "sender is required so completed reports have a reply address." },
+        { status: 400 },
       );
     }
 
@@ -125,7 +105,6 @@ export async function POST(request: Request) {
       { status: created ? 202 : 200, headers: { "Cache-Control": "no-store" } },
     );
   } catch (error) {
-    if (error instanceof UnauthorizedError) return unauthorizedResponse(error);
     return Response.json(
       { ok: false, error: error instanceof Error ? error.message : "Failed to enqueue job." },
       { status: 500 },

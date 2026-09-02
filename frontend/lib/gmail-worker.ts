@@ -1,5 +1,5 @@
 /**
- * Browserless-backed Gmail automation for the Render worker.
+ * Browserless-backed Gmail automation for the scheduled worker.
  *
  * Session state lives in Neon, not on the worker's disk, so a fresh Render
  * instance can resume without a local profile. A Google challenge is reported

@@ -1,5 +1,5 @@
 /**
- * CSV intake validation shared by the Vercel enqueue API and the Render worker.
+ * CSV intake validation shared by the Vercel enqueue API and the scheduled worker.
  *
  * Pure functions only: no filesystem, network, or Next.js imports, so this can
  * be unit tested directly and reused from a plain Node worker process.

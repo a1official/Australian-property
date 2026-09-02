@@ -247,20 +247,15 @@ export function BatchReports() {
 
   const [dbJobs, setDbJobs] = useState<DurableJob[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
-  const [adminAuthed, setAdminAuthed] = useState(false);
   const [workerHealthy, setWorkerHealthy] = useState<boolean | null>(null);
-  const [operatorToken, setOperatorToken] = useState("");
-  const [signingIn, setSigningIn] = useState(false);
 
-  // Durable job state comes from Neon through an authenticated route. The
-  // operator token never reaches client JS; an httpOnly session cookie is used.
+  // Demo-mode job state comes directly from Neon through the read-only API.
   const fetchJobs = useCallback(async () => {
     try {
       setLoadingJobs(true);
       const response = await fetch("/api/gmail/jobs", { cache: "no-store" });
-      if (response.status === 401) { setAdminAuthed(false); return; }
       const data = await response.json() as { ok?: boolean; jobs?: DurableJob[] };
-      if (data.ok && Array.isArray(data.jobs)) { setDbJobs(data.jobs); setAdminAuthed(true); }
+      if (response.ok && data.ok && Array.isArray(data.jobs)) setDbJobs(data.jobs);
     } catch {
       // transient network failure; the next poll retries
     } finally {
@@ -286,44 +281,12 @@ export function BatchReports() {
     const bootstrap = setTimeout(() => {
       if (cancelled) return;
       void fetch("/api/gmail/status").then((response) => response.json()).then(setGmail).catch(() => setGmail(null));
-      void fetch("/api/admin/session", { cache: "no-store" })
-        .then((response) => response.json())
-        .then((data: { authenticated?: boolean }) => { if (!cancelled) setAdminAuthed(Boolean(data.authenticated)); })
-        .catch(() => { if (!cancelled) setAdminAuthed(false); });
       void fetchJobs();
       void fetchWorkerHealth();
     }, 0);
     const interval = setInterval(() => { void fetchJobs(); void fetchWorkerHealth(); }, 10_000);
     return () => { cancelled = true; clearTimeout(bootstrap); clearInterval(interval); };
   }, [fetchJobs, fetchWorkerHealth]);
-
-  async function signIn(): Promise<boolean> {
-    const token = operatorToken.trim();
-    if (!token) {
-      setGmailNotice("Enter the operator token below to view jobs or queue a report.");
-      return false;
-    }
-    setSigningIn(true);
-    try {
-      const response = await fetch("/api/admin/session", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
-      });
-      if (!response.ok) { setGmailNotice("That operator token was not accepted."); return false; }
-      setOperatorToken("");
-      setGmailNotice("");
-      setAdminAuthed(true);
-      await fetchJobs();
-      await fetchWorkerHealth();
-      return true;
-    } catch {
-      setGmailNotice("Could not verify the operator token. Check the local server and try again.");
-      return false;
-    } finally {
-      setSigningIn(false);
-    }
-  }
 
   function update(id: string, patch: Partial<BatchRow>) {
     setRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row));
@@ -445,10 +408,9 @@ export function BatchReports() {
   /**
    * Enqueues the loaded CSV as a durable Neon job, then follows its progress.
    * No Playwright or Cotality batch work runs in the browser or in a Vercel
-   * function: the Render worker owns execution.
+   * function: the scheduled background worker owns execution.
    */
   async function runAutoPilot() {
-    if (!adminAuthed && !(await signIn())) return;
     if (!pendingCsv) {
       setAutoPilotStage("error");
       setAutoPilotDetail("Choose a CSV first. Auto-pilot queues it for the background worker.");
@@ -590,18 +552,10 @@ export function BatchReports() {
           </span>
         </div>
         <div>
-          {adminAuthed
-            ? <button onClick={() => void fetchJobs()} disabled={loadingJobs}><RefreshCw size={12} className={loadingJobs ? "spin" : ""} /> Refresh</button>
-            : <form className="operator-sign-in" onSubmit={(event) => { event.preventDefault(); void signIn(); }}>
-                <label className="sr-only" htmlFor="operator-token">Operator token</label>
-                <input id="operator-token" type="password" autoComplete="current-password" placeholder="Operator token" value={operatorToken} onChange={(event) => setOperatorToken(event.target.value)} />
-                <button type="submit" disabled={signingIn}>{signingIn ? <LoaderCircle size={12} className="spin" /> : null}{signingIn ? "Checking" : "Unlock jobs"}</button>
-              </form>}
+          <button onClick={() => void fetchJobs()} disabled={loadingJobs}><RefreshCw size={12} className={loadingJobs ? "spin" : ""} /> Refresh</button>
         </div>
       </div>
-      {!adminAuthed
-        ? <p className="durable-jobs-empty">Job state is stored in Neon and requires the operator token.</p>
-        : dbJobs.length
+      {dbJobs.length
           ? <div className="durable-jobs-list">
               {dbJobs.map((job) => <div key={job.id} className="durable-job">
                 <div>

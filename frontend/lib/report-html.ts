@@ -1,7 +1,7 @@
 /**
  * Isomorphic Parcel Atlas report builder.
  *
- * Shared by the browser component and the Render worker so both produce byte-
+ * Shared by the browser component and the scheduled worker so both produce byte-
  * identical HTML. Image embedding is injected because the browser fetches
  * through the image proxy route while the worker fetches Cotality directly.
  *
