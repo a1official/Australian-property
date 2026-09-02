@@ -8,9 +8,9 @@ export function runtimeEnv(name: string, env: NodeJS.ProcessEnv = process.env): 
   if (env !== process.env || env.NODE_ENV === "production") return undefined;
 
   for (const path of [resolve(process.cwd(), ".env"), resolve(process.cwd(), "..", ".env")]) {
-    if (!existsSync(path)) continue;
+    if (!existsSync(/* turbopackIgnore: true */ path)) continue;
     try {
-      const line = readFileSync(path, "utf8").split(/\r?\n/).find((candidate) => candidate.startsWith(`${name}=`));
+      const line = readFileSync(/* turbopackIgnore: true */ path, "utf8").split(/\r?\n/).find((candidate) => candidate.startsWith(`${name}=`));
       const value = line?.slice(name.length + 1).trim().replace(/^['"]|['"]$/g, "");
       if (value) return value;
     } catch {
