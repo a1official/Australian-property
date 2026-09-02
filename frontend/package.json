@@ -19,6 +19,8 @@
     "worker:once": "tsx scripts/render-worker.ts --once",
     "cotality:batch": "tsx scripts/cotality-batch-reports.ts",
     "gmail:auth": "tsx scripts/gmail-auth.ts",
+    "gmail:auth:remote": "tsx scripts/gmail-auth-browserless.ts",
+    "gmail:verify": "tsx scripts/verify-gmail-login.ts",
     "gmail:pipeline": "tsx scripts/gmail-pipeline.ts",
     "gmail:pipeline:headed": "tsx scripts/gmail-pipeline.ts -- --headed",
     "gmail:pipeline:force": "tsx scripts/gmail-pipeline.ts -- --force"

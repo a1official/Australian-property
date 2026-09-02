@@ -20,10 +20,24 @@ import type { BrowserContext } from "playwright-core";
 import type { Logger } from "./logger";
 import { NeedsReauthenticationError, openGmailSession, type GmailSession } from "./gmail-worker";
 
-/** Revalidate an idle session at most this often. */
-const REVALIDATE_AFTER_MS = 10 * 60_000;
-/** Recycle before Browserless drops a long-lived connection. */
-const MAX_SESSION_AGE_MS = 45 * 60_000;
+/**
+ * Browserless enforces an absolute session deadline from browser start, set by
+ * the plan: 2 minutes on Free, 15 on Prototyping, 30 on Starter, 60 on Scale.
+ * Reconnecting cannot extend it. Recycling must therefore happen just inside
+ * that deadline, or the session dies mid-operation instead of being replaced
+ * cleanly. Configure BROWSERLESS_MAX_SESSION_MS to match the active plan.
+ */
+const PLAN_MAX_SESSION_MS = Number(process.env.BROWSERLESS_MAX_SESSION_MS || 120_000);
+
+/** Recycle with a safety margin so a job never runs into the hard deadline. */
+const MAX_SESSION_AGE_MS = Math.max(30_000, Math.floor(PLAN_MAX_SESSION_MS * 0.8));
+
+/**
+ * Revalidate at most once per session lifetime. On a short-lived plan the
+ * session is recycled long before an idle probe would ever be useful.
+ */
+const REVALIDATE_AFTER_MS = Math.max(30_000, Math.floor(MAX_SESSION_AGE_MS / 2));
+
 /** Minimum spacing between connection attempts after a failure. */
 const RECONNECT_BACKOFF_MS = 5 * 60_000;
 
