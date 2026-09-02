@@ -25,6 +25,8 @@ core-engine = "engine.cli:main"
 source-scraper = "source_scrapers.cli:main"
 property-tree-assets = "source_scrapers.property_tree_assets:main"
 rea-api = "rea_api.cli:main"
+gmail-login = "rea_pipeline.gmail_auth:main"
+gmail-pipeline = "rea_pipeline.gmail_pipeline:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

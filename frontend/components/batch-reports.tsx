@@ -1,7 +1,9 @@
 "use client";
 
-import { ChangeEvent, useMemo, useState } from "react";
-import { ArrowRight, Check, CircleDashed, FileText, LoaderCircle, Printer, Search } from "lucide-react";
+import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ArrowRight, Check, CircleDashed, FileText, LoaderCircle, Mail, Printer, Search, Send, Zap } from "lucide-react";
+
+type AutoPilotStage = "idle" | "syncing" | "matching" | "generating" | "sending" | "done" | "error";
 
 type Suggestion = { propertyId: number | string; suggestion: string };
 type MatchDetails = { propertyId?: number | string; matchType?: string; matchRule?: string; updateIndicator?: string };
@@ -116,7 +118,9 @@ function selectQualityComparableRents(candidates: ReportCandidate[]) {
 
 async function embedImage(source: string) {
   try {
-    const response = await fetch("/api/corelogic/image?src=" + encodeURIComponent(source));
+    // Images are supplementary evidence. A slow upstream image must never
+    // prevent the property report itself from finishing.
+    const response = await fetch("/api/corelogic/image?src=" + encodeURIComponent(source), { signal: AbortSignal.timeout(8_000) });
     if (!response.ok) return "";
     const image = await response.blob();
     if (!image.type.startsWith("image/")) return "";
@@ -181,10 +185,26 @@ async function makeReport(address: string, profile: unknown, comparables: unknow
   ].join("");
 }
 
-async function api<T>(url: string) {
-  const response = await fetch(url);
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.detail || "Request failed.");
+async function api<T>(url: string, timeoutMs = 30_000) {
+  let response: Response;
+  try {
+    response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      throw new Error(`This Cotality request did not respond within ${Math.ceil(timeoutMs / 1_000)} seconds.`);
+    }
+    throw error;
+  }
+  const body = await response.text();
+  let payload: { detail?: string } | T | null = null;
+  try { payload = body ? JSON.parse(body) as T : null; }
+  catch {
+    throw new Error(`Request failed (${response.status}): ${body.slice(0, 160) || "The server did not return JSON."}`);
+  }
+  if (!response.ok) {
+    const detail = payload && typeof payload === "object" && "detail" in payload ? payload.detail : null;
+    throw new Error(typeof detail === "string" ? detail : `Request failed (${response.status}).`);
+  }
   return payload as T;
 }
 
@@ -192,9 +212,20 @@ export function BatchReports() {
   const [rows, setRows] = useState<BatchRow[]>([]);
   const [fileName, setFileName] = useState("");
   const [loadingFile, setLoadingFile] = useState(false);
+  const [gmail, setGmail] = useState<{ configured: boolean; connected: boolean; email: string | null; allowedSendersConfigured: boolean } | null>(null);
+  const [gmailBusy, setGmailBusy] = useState(false);
+  const [gmailNotice, setGmailNotice] = useState("");
+  const [replyTo, setReplyTo] = useState("");
+  const [sourceMessageId, setSourceMessageId] = useState("");
+  const [autoPilotStage, setAutoPilotStage] = useState<AutoPilotStage>("idle");
+  const [autoPilotDetail, setAutoPilotDetail] = useState("");
   const counts = useMemo(() => rows.reduce<Record<string, number>>((all, row) => { all[row.status] = (all[row.status] || 0) + 1; return all; }, {}), [rows]);
   const ready = rows.filter((row) => row.status === "ready").length;
   const complete = rows.filter((row) => row.status === "complete").length;
+
+  useEffect(() => {
+    void fetch("/api/gmail/status").then((response) => response.json()).then(setGmail).catch(() => setGmail(null));
+  }, []);
 
   function update(id: string, patch: Partial<BatchRow>) {
     setRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row));
@@ -210,6 +241,12 @@ export function BatchReports() {
       const matchDetails = matcher.status === "fulfilled" ? matcher.value.matchDetails : null;
       const suggestions = suggest.status === "fulfilled" ? suggest.value.suggestions.slice(0, 5) : [];
       const exactSuggestion = suggestions.find((item) => comparableAddress(item.suggestion) === comparableAddress(address));
+      const exactMatcherId = Number(matchDetails?.propertyId);
+      const isExactMatcher = matchDetails?.matchType === "E" && Number.isSafeInteger(exactMatcherId) && exactMatcherId > 0;
+      if (isExactMatcher) {
+        const matchingSuggestion = suggestions.find((item) => Number(item.propertyId) === exactMatcherId);
+        return { ...base, propertyId: exactMatcherId, normalizedAddress: matchingSuggestion?.suggestion || address, suggestions, match: matchDetails, status: "ready", note: "Exact Address Matcher result — ready to process." };
+      }
       if (exactSuggestion) {
         return { ...base, propertyId: Number(exactSuggestion.propertyId), normalizedAddress: exactSuggestion.suggestion, suggestions, match: matchDetails, status: "ready", note: "Exact suggestion match — ready to process." };
       }
@@ -220,11 +257,11 @@ export function BatchReports() {
     }
   }
 
-  async function upload(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]; if (!file) return;
-    setFileName(file.name); setLoadingFile(true); setRows([]);
+  async function queueCsv(sourceText: string, name: string, origin?: { sender: string; messageId: string }) {
+    setFileName(name); setLoadingFile(true); setRows([]);
+    if (origin) { setReplyTo(origin.sender); setSourceMessageId(origin.messageId); }
     try {
-      const source = parseCsv(await file.text()), headers = source[0] || [];
+      const source = parseCsv(sourceText), headers = source[0] || [];
       const column = headers.findIndex((header) => /^(address|property address|full address)$/i.test(header.trim()));
       if (column < 0) { setRows([{ id: "format", rowNumber: 0, originalAddress: "", suggestions: [], status: "unmatched", note: "CSV requires address, property address, or full address column." }]); return; }
       const input = source.slice(1).map((row, index) => ({ address: row[column]?.trim() || "", rowNumber: index + 2 })).filter((row) => row.address);
@@ -233,7 +270,41 @@ export function BatchReports() {
         results.push(await match(item.address, item.rowNumber));
         setRows([...results, ...input.slice(results.length).map((next) => ({ id: String(next.rowNumber) + "-" + next.address, rowNumber: next.rowNumber, originalAddress: next.address, suggestions: [], status: "matching" as Status, note: "Queued for address matching…" }))]);
       }
-    } finally { setLoadingFile(false); event.target.value = ""; }
+    } finally { setLoadingFile(false); }
+  }
+
+  async function upload(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]; if (!file) return;
+    setReplyTo(""); setSourceMessageId("");
+    await queueCsv(await file.text(), file.name);
+    event.target.value = "";
+  }
+
+  async function syncGmail() {
+    setGmailBusy(true); setGmailNotice("");
+    try {
+      const response = await fetch("/api/gmail/sync", { method: "POST" });
+      const payload = await response.json() as { detail?: string; imports?: Array<{ sender: string; messageId: string; fileName: string; csv: string }> };
+      if (!response.ok) throw new Error(payload.detail || "Inbox check failed.");
+      const incoming = payload.imports?.[0];
+      if (!incoming) { setGmailNotice("No unread CSV from an approved sender was found."); return; }
+      await queueCsv(incoming.csv, incoming.fileName, incoming);
+      setGmailNotice(`Imported ${incoming.fileName} from ${incoming.sender}. Review and generate the reports below.`);
+    } catch (error) { setGmailNotice(error instanceof Error ? error.message : "Inbox check failed."); }
+    finally { setGmailBusy(false); }
+  }
+
+  async function replyWithReports() {
+    const reports = rows.filter((row) => row.status === "complete" && row.report).map((row) => ({ fileName: `parcel-atlas-${row.propertyId}.html`, html: row.report || "" }));
+    if (!replyTo || !reports.length) return;
+    setGmailBusy(true); setGmailNotice("");
+    try {
+      const response = await fetch("/api/gmail/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipient: replyTo, subject: `Parcel Atlas rent-review reports (${reports.length})`, reports, sourceMessageId }) });
+      const payload = await response.json() as { detail?: string };
+      if (!response.ok) throw new Error(payload.detail || "Report reply failed.");
+      setGmailNotice(`Sent ${reports.length} HTML report${reports.length === 1 ? "" : "s"} to ${replyTo}.`);
+    } catch (error) { setGmailNotice(error instanceof Error ? error.message : "Report reply failed."); }
+    finally { setGmailBusy(false); }
   }
 
   function approve(row: BatchRow, suggestion?: Suggestion) {
@@ -244,7 +315,10 @@ export function BatchReports() {
     if (!row.propertyId) return;
     update(row.id, { status: "processing", note: "Loading property and comparable evidence…" });
     try {
-      const [profile, comparables] = await Promise.all([api<unknown>("/api/corelogic/properties/" + row.propertyId), api<unknown>("/api/corelogic/properties/" + row.propertyId + "/comparables")]);
+      // Cotality's sandbox is rate-limited. Keep each dossier request ordered
+      // as well as the batch itself so a CSV cannot create a small request burst.
+      const profile = await api<unknown>("/api/corelogic/properties/" + row.propertyId, 120_000);
+      const comparables = await api<unknown>("/api/corelogic/properties/" + row.propertyId + "/comparables", 120_000);
       const report = await makeReport(row.normalizedAddress || row.originalAddress, profile, comparables);
       update(row.id, { status: "complete", note: "HTML report with embedded images ready.", report });
     } catch (error) {
@@ -261,9 +335,180 @@ export function BatchReports() {
     await worker();
   }
 
+  const autoPilotStageLabel: Record<AutoPilotStage, string> = {
+    idle: "", syncing: "Checking inbox…", matching: "Matching addresses…",
+    generating: "Generating reports…", sending: "Emailing reports…",
+    done: "Auto-pilot complete.", error: "Auto-pilot encountered an error.",
+  };
+
+  async function runAutoPilot() {
+    setGmailBusy(true); setAutoPilotStage("syncing"); setAutoPilotDetail("Starting the Browserless Gmail pipeline…"); setGmailNotice("");
+    try {
+      const start = await fetch("/api/gmail/playwright-pipeline", { method: "POST" });
+      const initial = await start.json() as { detail?: string; running?: boolean; exitCode?: number | null; lastLog?: string };
+      if (!start.ok) throw new Error(initial.detail || "Could not start the local Browserless pipeline.");
+
+      let status = initial;
+      while (status.running) {
+        setAutoPilotDetail(status.lastLog || "Browserless pipeline is checking the inbox…");
+        await new Promise((resolve) => window.setTimeout(resolve, 1_500));
+        const response = await fetch("/api/gmail/playwright-pipeline", { cache: "no-store" });
+        status = await response.json() as typeof initial;
+        if (!response.ok) throw new Error(status.detail || "Could not read Browserless pipeline status.");
+      }
+
+      if (status.exitCode !== 0) throw new Error(status.lastLog || "Browserless pipeline did not complete.");
+      setAutoPilotStage("done");
+      setAutoPilotDetail("Browserless pipeline completed. CSV reports were generated and sent by the local Gmail workflow.");
+      setGmailNotice("Auto-pilot complete through the local Browserless/Playwright pipeline.");
+    } catch (error) {
+      // Hosted deployments cannot access this workstation's saved browser
+      // profile, so retain the OAuth workflow there as the explicit fallback.
+      if (error instanceof Error && error.message.includes("only run from the local workstation")) {
+        await runOAuthAutoPilot();
+        return;
+      }
+      setAutoPilotStage("error");
+      setAutoPilotDetail(error instanceof Error ? error.message : "Browserless auto-pilot failed.");
+    } finally {
+      setGmailBusy(false);
+    }
+  }
+
+  async function runOAuthAutoPilot() {
+    setGmailBusy(true); setAutoPilotStage("syncing"); setAutoPilotDetail(""); setGmailNotice("");
+    try {
+      // Stage 1: Sync inbox — fetch the latest unread CSV from an approved sender
+      setAutoPilotDetail("Fetching unread CSV attachments from inbox…");
+      let incoming: { sender: string; messageId: string; subject: string; fileName: string; csv: string } | null = null;
+
+      try {
+        const syncResponse = await fetch("/api/gmail/sync", { method: "POST" });
+        const syncPayload = await syncResponse.json() as { detail?: string; imports?: Array<{ sender: string; messageId: string; subject: string; fileName: string; csv: string }> };
+        if (syncResponse.ok && syncPayload.imports?.[0]) {
+          incoming = syncPayload.imports[0];
+        }
+      } catch {
+        // Fallback to remote Playwright if OAuth sync wasn't available
+      }
+
+      if (!incoming) {
+        // Try remote Playwright crawler
+        try {
+          setAutoPilotDetail("Connecting to remote browser to check inbox…");
+          const pwResponse = await fetch("/api/gmail/playwright-crawl", { method: "POST" });
+          const pwPayload = await pwResponse.json() as { success: boolean; items?: Array<{ sender: string; key: string; subject: string; fileName: string; csvContent: string; skipped: boolean }> };
+          const activeItem = pwPayload.items?.find((item) => !item.skipped && item.csvContent);
+          if (activeItem) {
+            incoming = {
+              sender: activeItem.sender,
+              messageId: activeItem.key,
+              subject: activeItem.subject,
+              fileName: activeItem.fileName,
+              csv: activeItem.csvContent,
+            };
+          }
+        } catch {
+          // Playwright remote endpoint may not be configured
+        }
+      }
+
+      if (!incoming) { setAutoPilotStage("error"); setAutoPilotDetail("No unread CSV from an approved sender was found."); return; }
+      setAutoPilotDetail(`Found ${incoming.fileName} from ${incoming.sender}.`);
+
+      // Stage 2: Parse CSV and match addresses against Cotality
+      setAutoPilotStage("matching");
+      setFileName(incoming.fileName); setLoadingFile(true); setRows([]);
+      setReplyTo(incoming.sender); setSourceMessageId(incoming.messageId);
+      const source = parseCsv(incoming.csv), headers = source[0] || [];
+      const column = headers.findIndex((header) => /^(address|property address|full address)$/i.test(header.trim()));
+      if (column < 0) { setAutoPilotStage("error"); setAutoPilotDetail("CSV requires address, property address, or full address column."); setLoadingFile(false); return; }
+      const input = source.slice(1).map((row, index) => ({ address: row[column]?.trim() || "", rowNumber: index + 2 })).filter((row) => row.address);
+      if (!input.length || input.length > 10) { setAutoPilotStage("error"); setAutoPilotDetail("Inbox CSV must contain between one and ten property addresses."); setLoadingFile(false); return; }
+      const matchedRows: BatchRow[] = [];
+      for (const item of input) {
+        setAutoPilotDetail(`Matching address ${matchedRows.length + 1} of ${input.length}…`);
+        matchedRows.push(await match(item.address, item.rowNumber));
+        setRows([...matchedRows, ...input.slice(matchedRows.length).map((next) => ({ id: String(next.rowNumber) + "-" + next.address, rowNumber: next.rowNumber, originalAddress: next.address, suggestions: [], status: "matching" as Status, note: "Queued for address matching…" }))]);
+      }
+      setLoadingFile(false);
+
+      // Only exact normalised suggestion matches are marked ready by match().
+      // A single non-exact suggestion still needs reviewer approval.
+      const autoApproved = matchedRows;
+      setRows(autoApproved);
+
+      // Stage 3: Generate reports for all ready rows
+      const readyRows = autoApproved.filter((row) => row.status === "ready");
+      if (!readyRows.length) { setAutoPilotStage("error"); setAutoPilotDetail(`No addresses could be matched. ${autoApproved.filter((r) => r.status === "review").length} need manual review, ${autoApproved.filter((r) => r.status === "unmatched").length} unmatched.`); return; }
+      setAutoPilotStage("generating");
+      let generated = 0;
+      const completedReports: Array<{ fileName: string; html: string }> = [];
+      for (const row of readyRows) {
+        if (!row.propertyId) continue;
+        generated += 1;
+        setAutoPilotDetail(`Generating report ${generated} of ${readyRows.length}…`);
+        const id = row.id;
+        setRows((current) => current.map((r) => r.id === id ? { ...r, status: "processing" as Status, note: "Loading property and comparable evidence…" } : r));
+        try {
+          const profile = await api<unknown>("/api/corelogic/properties/" + row.propertyId, 120_000);
+          const comparables = await api<unknown>("/api/corelogic/properties/" + row.propertyId + "/comparables", 120_000);
+          const report = await makeReport(row.normalizedAddress || row.originalAddress, profile, comparables);
+          completedReports.push({ fileName: `parcel-atlas-${row.propertyId}.html`, html: report });
+          setRows((current) => current.map((r) => r.id === id ? { ...r, status: "complete" as Status, note: "HTML report with embedded images ready.", report } : r));
+        } catch (error) {
+          setRows((current) => current.map((r) => r.id === id ? { ...r, status: "failed" as Status, note: "Report could not be generated.", error: error instanceof Error ? error.message : "Processing failed." } : r));
+        }
+      }
+
+      // Stage 4: Send completed reports back to the original sender
+      setAutoPilotStage("sending");
+      if (!completedReports.length) { setAutoPilotStage("error"); setAutoPilotDetail("No reports were generated successfully."); return; }
+      setAutoPilotDetail(`Sending ${completedReports.length} report${completedReports.length === 1 ? "" : "s"} to ${incoming.sender}…`);
+      const sendResponse = await fetch("/api/gmail/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipient: incoming.sender, subject: `Parcel Atlas rent-review reports (${completedReports.length})`, reports: completedReports, sourceMessageId: incoming.messageId }) });
+      const sendPayload = await sendResponse.json() as { detail?: string };
+      if (!sendResponse.ok) throw new Error(sendPayload.detail || "Failed to send reports.");
+
+      setAutoPilotStage("done");
+      setAutoPilotDetail(`Sent ${completedReports.length} report${completedReports.length === 1 ? "" : "s"} to ${incoming.sender}. The source email has been marked as read.`);
+      setGmailNotice(`Auto-pilot complete: ${completedReports.length} report${completedReports.length === 1 ? "" : "s"} sent to ${incoming.sender}.`);
+    } catch (error) {
+      setAutoPilotStage("error");
+      setAutoPilotDetail(error instanceof Error ? error.message : "Auto-pilot failed.");
+      setLoadingFile(false);
+    } finally { setGmailBusy(false); }
+  }
+
   return <section className="batch-reports" id="batch-reports">
     <header className="batch-heading"><div><p className="micro-label">Batch reports / CSV to evidence</p><h2>From property list to review-ready reports.</h2></div><p>Addresses are matched first. Only a validated or reviewer-approved property enters the Cotality report workflow.</p></header>
     <div className="batch-upload"><div><FileText size={26} /><h3>Upload property CSV</h3><p>Required column: <code>address</code>, <code>property address</code>, or <code>full address</code>.</p><label className="batch-file-picker"><input type="file" accept=".csv,text/csv" onChange={upload} disabled={loadingFile} />{loadingFile ? <><LoaderCircle className="spin" size={16} /> Reading & matching</> : <>Choose CSV <ArrowRight size={16} /></>}</label><small>{fileName || "No file selected"} · <a href="/sample-property-batch.csv" download>Download sample CSV</a></small></div><aside><span>Safeguard</span><strong>Review before report</strong><p>Ambiguous units or multiple suggestions remain in the review queue. No report is generated until a candidate is selected.</p></aside></div>
+    <div className="gmail-dock">
+      <div className="gmail-dock-mark"><Mail size={20} /><span>Inbound mailbox</span></div>
+      <div className="gmail-dock-copy"><strong>{gmail?.connected ? `Connected as ${gmail.email}` : "Automated Playwright & Gmail Pipeline"}</strong><small>Run Auto-pilot to check your Gmail inbox for CSV attachments, generate Cotality reports, and email them back to requesters.</small></div>
+      <div className="gmail-dock-actions">
+        {gmail?.connected ? <button className="gmail-action" onClick={() => void syncGmail()} disabled={gmailBusy || loadingFile || autoPilotStage !== "idle"}>{gmailBusy ? <LoaderCircle className="spin" size={14} /> : <Mail size={14} />}Check inbox</button> : <a href="/api/gmail/connect" className="gmail-action" aria-disabled={!gmail?.configured}>Connect OAuth <ArrowRight size={14} /></a>}
+        <button className="gmail-action autopilot" onClick={() => void runAutoPilot()} disabled={gmailBusy || loadingFile || (autoPilotStage !== "idle" && autoPilotStage !== "done" && autoPilotStage !== "error")}>{autoPilotStage !== "idle" && autoPilotStage !== "done" && autoPilotStage !== "error" ? <LoaderCircle className="spin" size={14} /> : <Zap size={14} />}Auto-pilot</button>
+        {replyTo && complete ? <button className="gmail-action send-back" onClick={() => void replyWithReports()} disabled={gmailBusy}><Send size={14} />Send reports back</button> : null}
+      </div>
+      {gmailNotice ? <p className="gmail-notice">{gmailNotice}</p> : null}
+    </div>
+    {autoPilotStage !== "idle" ? <div className="autopilot-progress">
+      <div className="autopilot-stages">
+        {(["syncing", "matching", "generating", "sending"] as const).map((stage) => {
+          const stages: AutoPilotStage[] = ["syncing", "matching", "generating", "sending"];
+          const currentIndex = stages.indexOf(autoPilotStage === "done" ? "sending" : autoPilotStage === "error" ? autoPilotStage : autoPilotStage);
+          const stageIndex = stages.indexOf(stage);
+          const isDone = autoPilotStage === "done" || stageIndex < currentIndex;
+          const isActive = stage === autoPilotStage;
+          const isError = autoPilotStage === "error" && stageIndex === currentIndex;
+          return <div key={stage} className={`autopilot-step${isDone ? " done" : ""}${isActive ? " active" : ""}${isError ? " error" : ""}`}>
+            {isDone ? <Check size={13} /> : isActive ? <LoaderCircle className="spin" size={13} /> : isError ? <CircleDashed size={13} /> : <CircleDashed size={13} />}
+            <span>{autoPilotStageLabel[stage]?.replace("…", "") || stage}</span>
+          </div>;
+        })}
+      </div>
+      <p className="autopilot-detail">{autoPilotDetail}</p>
+    </div> : null}
     {rows.length ? <><div className="batch-stats"><div><span>Rows</span><strong>{rows.length}</strong></div><div><span>Ready</span><strong>{counts.ready || 0}</strong></div><div><span>Review</span><strong>{counts.review || 0}</strong></div><div><span>Completed</span><strong>{complete}</strong></div><button onClick={() => void processBatch()} disabled={!ready || loadingFile}>{ready ? "Generate " + ready + " report" + (ready === 1 ? "" : "s") : "No approved reports"} <ArrowRight size={16} /></button></div>
       <div className="batch-ledger"><div className="batch-ledger-heading"><span>CSV row</span><span>Original input</span><span>Match decision</span><span>Report status</span></div>{rows.map((row) => <article key={row.id}><span className="batch-row-number">{row.rowNumber || "!"}</span><div className="batch-address"><strong>{row.originalAddress || "CSV format error"}</strong>{row.normalizedAddress && row.normalizedAddress !== row.originalAddress ? <small>Normalized: {row.normalizedAddress}</small> : null}</div><div className="batch-match"><span className={"batch-status " + row.status}>{row.status === "complete" || row.status === "ready" ? <Check size={13} /> : row.status === "matching" || row.status === "processing" ? <LoaderCircle className="spin" size={13} /> : <CircleDashed size={13} />}{row.status}</span><p>{row.note}</p>{row.status === "review" ? <div className="batch-suggestions">{row.suggestions.map((suggestion, index) => <button key={String(suggestion.propertyId) + "-" + index} onClick={() => approve(row, suggestion)}><Search size={13} />{suggestion.suggestion}</button>)}</div> : null}</div><div className="batch-output">{row.status === "complete" && row.report ? <><button onClick={() => saveFile("parcel-atlas-" + row.propertyId + ".html", row.report || "")}><FileText size={14} />Download HTML</button><button className="pdf-button" onClick={() => saveAsPdf(row.report || "")}><Printer size={14} />Save as PDF</button></> : row.status === "failed" ? <span className="batch-error">{row.error}</span> : <span>—</span>}</div></article>)}</div>
       {complete ? <div className="batch-export"><span>{complete} HTML report{complete === 1 ? "" : "s"} ready in this browser session.</span><button onClick={() => saveFile("parcel-atlas-batch-index.html", "<!doctype html><title>Parcel Atlas batch</title><h1>Parcel Atlas batch reports</h1><p>Generated " + new Date().toLocaleString("en-AU") + "</p>")}>Download batch index <ArrowRight size={15} /></button></div> : null}

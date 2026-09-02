@@ -8,6 +8,9 @@ __pycache__/
 data/*.db
 data/*.db-*
 data/*.jsonl
+data/gmail_checkpoints.json
+data/incoming_csv/
+data/reports/
 data/*report*.json
 data/*report*.html
 data/*report*.png
@@ -17,6 +20,7 @@ build/
 artifacts/rea-bundles/*.js
 artifacts/property-tree-bundles/*.js
 .browser-profiles/
+.local/
 tmp/
 frontend/node_modules/
 frontend/.next/

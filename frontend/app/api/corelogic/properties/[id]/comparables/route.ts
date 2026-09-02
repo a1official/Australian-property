@@ -1,6 +1,6 @@
 import { corelogicRequest } from "@/lib/corelogic";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -107,7 +107,7 @@ async function referenceCoordinates(propertyId: string, location: JsonRecord) {
   return null;
 }
 
-export async function GET(_request: Request, context: RouteContext<"/api/corelogic/properties/[id]/comparables">) {
+async function buildComparables(context: RouteContext<"/api/corelogic/properties/[id]/comparables">) {
   const { id } = await context.params;
   if (!/^\d{1,14}$/.test(id)) return Response.json({ detail: "Invalid CoreLogic property identifier." }, { status: 400 });
 
@@ -195,4 +195,12 @@ export async function GET(_request: Request, context: RouteContext<"/api/corelog
     candidates,
     cache: { ttlSeconds: 300 },
   }, { headers: { "Cache-Control": "private, max-age=60, stale-while-revalidate=300" } });
+}
+
+export async function GET(_request: Request, context: RouteContext<"/api/corelogic/properties/[id]/comparables">) {
+  try {
+    return await buildComparables(context);
+  } catch (error) {
+    return Response.json({ detail: error instanceof Error ? error.message : "Comparable data could not be loaded." }, { status: 500 });
+  }
 }

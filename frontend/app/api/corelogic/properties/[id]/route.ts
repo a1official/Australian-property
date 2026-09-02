@@ -1,6 +1,6 @@
 import { corelogicRequest } from "@/lib/corelogic";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 const modules = {
   core: (id: string) => `/property-details/au/properties/${id}/attributes/core`,
@@ -35,33 +35,37 @@ const moduleScopes: Record<string, ModuleName[]> = {
 };
 
 export async function GET(request: Request, context: RouteContext<"/api/corelogic/properties/[id]">) {
-  const { id } = await context.params;
-  if (!/^\d{1,14}$/.test(id)) {
-    return Response.json({ detail: "Invalid CoreLogic property identifier." }, { status: 400 });
+  try {
+    const { id } = await context.params;
+    if (!/^\d{1,14}$/.test(id)) {
+      return Response.json({ detail: "Invalid CoreLogic property identifier." }, { status: 400 });
+    }
+
+    const scope = new URL(request.url).searchParams.get("scope") || "overview";
+    const selectedModules = moduleScopes[scope];
+    if (!selectedModules) return Response.json({ detail: "Invalid property-data scope." }, { status: 400 });
+
+    const entries = await Promise.all(
+      selectedModules.map(async (name) => [name, await corelogicRequest(modules[name](id))] as const),
+    );
+    const data = Object.fromEntries(entries);
+    const successfulModules = entries.filter(([, result]) => result.ok).length;
+    const cacheHits = entries.filter(([, result]) => result.cacheStatus === "HIT").length;
+
+    return Response.json(
+      {
+        propertyId: Number(id),
+        scope,
+        generatedAt: new Date().toISOString(),
+        successfulModules,
+        totalModules: entries.length,
+        availableModules: Object.keys(modules).length,
+        cache: { hits: cacheHits, misses: entries.length - cacheHits, ttlSeconds: 300 },
+        modules: data,
+      },
+      { headers: { "Cache-Control": "private, max-age=60, stale-while-revalidate=300" } },
+    );
+  } catch (error) {
+    return Response.json({ detail: error instanceof Error ? error.message : "Property data could not be loaded." }, { status: 500 });
   }
-
-  const scope = new URL(request.url).searchParams.get("scope") || "overview";
-  const selectedModules = moduleScopes[scope];
-  if (!selectedModules) return Response.json({ detail: "Invalid property-data scope." }, { status: 400 });
-
-  const entries = await Promise.all(
-    selectedModules.map(async (name) => [name, await corelogicRequest(modules[name](id))] as const),
-  );
-  const data = Object.fromEntries(entries);
-  const successfulModules = entries.filter(([, result]) => result.ok).length;
-  const cacheHits = entries.filter(([, result]) => result.cacheStatus === "HIT").length;
-
-  return Response.json(
-    {
-      propertyId: Number(id),
-      scope,
-      generatedAt: new Date().toISOString(),
-      successfulModules,
-      totalModules: entries.length,
-      availableModules: Object.keys(modules).length,
-      cache: { hits: cacheHits, misses: entries.length - cacheHits, ttlSeconds: 300 },
-      modules: data,
-    },
-    { headers: { "Cache-Control": "private, max-age=60, stale-while-revalidate=300" } },
-  );
 }
