@@ -74,9 +74,16 @@ export function buildIdempotencyKey(input: {
   return createHash("sha256").update(raw, "utf8").digest("hex").slice(0, 40);
 }
 
-export function isAllowedSender(sender: string, allowedSenders: string[]): boolean {
+/**
+ * Validates a sender against an explicit allow-list, unless the operator has
+ * deliberately enabled public CSV intake. Even public intake requires a real
+ * email address; an empty/malformed Gmail DOM value is never accepted.
+ */
+export function isAllowedSender(sender: string, allowedSenders: string[], allowAnySender = false): boolean {
   const normalized = sender.trim().toLowerCase();
-  if (!normalized || !allowedSenders.length) return false;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return false;
+  if (allowAnySender) return true;
+  if (!allowedSenders.length) return false;
   return allowedSenders.some((allowed) => allowed.trim().toLowerCase() === normalized);
 }
 

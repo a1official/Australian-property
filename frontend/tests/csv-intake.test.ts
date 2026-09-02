@@ -113,4 +113,6 @@ test("sender allow-list is case insensitive and closed by default", () => {
   assert.equal(isAllowedSender("other@example.com", ["agent@example.com"]), false);
   assert.equal(isAllowedSender("agent@example.com", []), false);
   assert.equal(isAllowedSender("", ["agent@example.com"]), false);
+  assert.equal(isAllowedSender("new.sender@example.com", [], true), true);
+  assert.equal(isAllowedSender("not-an-email", [], true), false);
 });

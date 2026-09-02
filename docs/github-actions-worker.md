@@ -16,11 +16,12 @@ BROWSERLESS_API_KEY
 BROWSERLESS_WS_ENDPOINT
 GMAIL_USERNAME
 GMAIL_PASSWORD
-GMAIL_ALLOWED_SENDERS
 ```
 
-`GMAIL_ALLOWED_SENDERS` is a comma-separated list of addresses authorised to submit
-property CSVs and receive reports. An empty value makes the worker fail closed.
+`GMAIL_ALLOWED_SENDERS` is optional when `GMAIL_ALLOW_ANY_SENDER=true` is set. This
+repository's GitHub workflow deliberately enables that mode: any sender with a
+valid, policy-compliant CSV can receive a report. Use an allow-list instead by
+removing that workflow variable and setting `GMAIL_ALLOWED_SENDERS`.
 Never commit secrets, add them to workflow YAML, logs, artifacts, or `NEXT_PUBLIC_*` variables.
 
 ## Activation

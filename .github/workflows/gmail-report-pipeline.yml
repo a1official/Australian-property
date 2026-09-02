@@ -37,6 +37,8 @@ jobs:
       GMAIL_USERNAME: ${{ secrets.GMAIL_USERNAME }}
       GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
       GMAIL_ALLOWED_SENDERS: ${{ secrets.GMAIL_ALLOWED_SENDERS }}
+      # Explicit operator choice: a valid CSV from any sender can create a job.
+      GMAIL_ALLOW_ANY_SENDER: "true"
     steps:
       - name: Check out the pinned main revision
         uses: actions/checkout@v4

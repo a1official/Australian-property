@@ -99,6 +99,10 @@ const config = {
     .split(",")
     .map((value) => value.trim().toLowerCase())
     .filter(Boolean),
+  // Opt-in public intake: valid CSVs from any real sender are processed and
+  // replied to. Keep the default false so a missing environment variable does
+  // not accidentally make a private mailbox public.
+  allowAnySender: process.env.GMAIL_ALLOW_ANY_SENDER === "true",
   browserless: {
     wsEndpoint: process.env.BROWSERLESS_WS_ENDPOINT,
     apiKey: process.env.BROWSERLESS_API_KEY,
@@ -156,9 +160,8 @@ function recordMailboxCheck(foundMail: boolean): void {
 // ---------------------------------------------------------------------------
 
 async function discoverAndRegister(): Promise<number> {
-  if (!config.allowedSenders.length) {
-    // Fail closed: without an allow-list every sender would be untrusted input.
-    log.error("intake.blocked", { reason: "GMAIL_ALLOWED_SENDERS is not configured" });
+  if (!config.allowedSenders.length && !config.allowAnySender) {
+    log.error("intake.blocked", { reason: "Configure GMAIL_ALLOWED_SENDERS or explicitly set GMAIL_ALLOW_ANY_SENDER=true" });
     return 0;
   }
 
@@ -172,7 +175,7 @@ async function discoverAndRegister(): Promise<number> {
     for (const item of discovered) {
       const itemLog = log.child({ sender: item.sender, fileName: item.fileName });
 
-      if (!isAllowedSender(item.sender, config.allowedSenders)) {
+      if (!isAllowedSender(item.sender, config.allowedSenders, config.allowAnySender)) {
         itemLog.warn("intake.rejected", { reason: "sender is not on the allow-list" });
         continue;
       }

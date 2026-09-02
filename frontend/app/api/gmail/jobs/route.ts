@@ -21,6 +21,10 @@ function allowedSenders(): string[] {
     .filter(Boolean);
 }
 
+function allowAnySender(): boolean {
+  return process.env.GMAIL_ALLOW_ANY_SENDER === "true";
+}
+
 export async function GET(request: Request) {
   try {
     assertJobApiRequest(request);
@@ -48,9 +52,9 @@ export async function POST(request: Request) {
 
     const sender = (body.sender || "").trim().toLowerCase();
     // The reply goes to this address, so it must be on the allow-list.
-    if (!isAllowedSender(sender, allowedSenders())) {
+    if (!isAllowedSender(sender, allowedSenders(), allowAnySender())) {
       return Response.json(
-        { ok: false, error: "sender must be one of the configured GMAIL_ALLOWED_SENDERS." },
+        { ok: false, error: "sender must be a valid email address permitted by the configured intake policy." },
         { status: 403 },
       );
     }
