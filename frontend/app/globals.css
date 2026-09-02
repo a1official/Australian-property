@@ -466,3 +466,13 @@ button, input { font: inherit; } button, a { -webkit-tap-highlight-color: transp
 .batch-status.needs_review, .batch-status.retryable_failed { background: rgba(252,211,77,.16); border-color: rgba(252,211,77,.4); color: #fcd34d; }
 .batch-status.queued, .batch-status.claimed { background: rgba(255,255,255,.09); color: rgba(255,255,255,.68); }
 .batch-status.running, .batch-status.downloaded, .batch-status.matched, .batch-status.report_generated, .batch-status.replying { background: rgba(59,130,246,.18); border-color: rgba(59,130,246,.4); color: #93c5fd; }
+
+/* Manual uploaded-CSV queue action, kept visually distinct from the mailbox run */
+.manual-queue { border-top: 1px solid rgba(255,255,255,.12); display: grid; gap: 10px; margin-top: 18px; padding-top: 16px; }
+.manual-queue label { display: grid; gap: 6px; }
+.manual-queue label span { color: rgba(255,255,255,.5); font-size: 7px; letter-spacing: .13em; text-transform: uppercase; }
+.manual-queue input { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.18); color: white; font-size: 11px; padding: 9px 11px; width: 100%; }
+.manual-queue input:focus-visible { border-color: var(--acid); outline: 2px solid var(--acid); outline-offset: 1px; }
+.manual-queue button { width: max-content; }
+.manual-queue button:disabled { cursor: not-allowed; opacity: .5; }
+.manual-queue small { color: rgba(255,255,255,.42); font-size: 8px; line-height: 1.5; }

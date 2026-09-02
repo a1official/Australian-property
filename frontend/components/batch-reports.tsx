@@ -3,7 +3,19 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowRight, Check, CircleDashed, Database, FileText, LoaderCircle, Mail, Printer, RefreshCw, Search, Send, Zap } from "lucide-react";
 
-type AutoPilotStage = "idle" | "queued" | "matching" | "generating" | "sending" | "done" | "error";
+type AutoPilotStage =
+  | "idle"
+  // Mailbox run: dispatch is asynchronous, so acceptance and execution differ.
+  | "dispatching"
+  | "dispatched"
+  | "running"
+  // Shared with the manual uploaded-CSV path.
+  | "queued"
+  | "matching"
+  | "generating"
+  | "sending"
+  | "done"
+  | "error";
 
 type DurableJob = {
   id: string;
@@ -240,6 +252,8 @@ export function BatchReports() {
   const [autoPilotStage, setAutoPilotStage] = useState<AutoPilotStage>("idle");
   const [autoPilotDetail, setAutoPilotDetail] = useState("");
   const [pendingCsv, setPendingCsv] = useState<{ name: string; text: string } | null>(null);
+  const [dispatching, setDispatching] = useState(false);
+  const [dispatchConfigured, setDispatchConfigured] = useState<boolean | null>(null);
   const [jobDetail, setJobDetail] = useState<JobDetail | null>(null);
   const counts = useMemo(() => rows.reduce<Record<string, number>>((all, row) => { all[row.status] = (all[row.status] || 0) + 1; return all; }, {}), [rows]);
   const ready = rows.filter((row) => row.status === "ready").length;
@@ -283,6 +297,11 @@ export function BatchReports() {
       void fetch("/api/gmail/status").then((response) => response.json()).then(setGmail).catch(() => setGmail(null));
       void fetchJobs();
       void fetchWorkerHealth();
+      // Disable the mailbox CTA up front if this deployment cannot dispatch.
+      void fetch("/api/pipeline/trigger", { cache: "no-store" })
+        .then((response) => response.json())
+        .then((data: { configured?: boolean }) => { if (!cancelled) setDispatchConfigured(Boolean(data.configured)); })
+        .catch(() => { if (!cancelled) setDispatchConfigured(null); });
     }, 0);
     const interval = setInterval(() => { void fetchJobs(); void fetchWorkerHealth(); }, 10_000);
     return () => { cancelled = true; clearTimeout(bootstrap); clearInterval(interval); };
@@ -400,25 +419,101 @@ export function BatchReports() {
   }
 
   const autoPilotStageLabel: Record<AutoPilotStage, string> = {
-    idle: "", queued: "Queued…", matching: "Matching addresses…",
-    generating: "Generating reports…", sending: "Emailing reports…",
-    done: "Auto-pilot complete.", error: "Auto-pilot encountered an error.",
+    idle: "",
+    dispatching: "Starting mailbox run…",
+    dispatched: "Run accepted",
+    running: "Processing mailbox…",
+    queued: "Queued…",
+    matching: "Matching addresses…",
+    generating: "Generating reports…",
+    sending: "Emailing reports…",
+    done: "Pipeline complete.",
+    error: "The pipeline reported an error.",
   };
 
   /**
-   * Enqueues the loaded CSV as a durable Neon job, then follows its progress.
-   * No Playwright or Cotality batch work runs in the browser or in a Vercel
-   * function: the scheduled background worker owns execution.
+   * Starts a real mailbox run by dispatching the GitHub Actions worker.
+   *
+   * Needs no uploaded CSV and no reply address: the worker reads the mailbox
+   * itself. Dispatch is asynchronous, so this reports acceptance and then lets
+   * the durable job list show what the worker actually records.
    */
-  async function runAutoPilot() {
+  async function runMailboxPipeline() {
+    setDispatching(true);
+    setAutoPilotStage("dispatching");
+    setAutoPilotDetail("Starting mailbox run…");
+    setGmailNotice("");
+    try {
+      const response = await fetch("/api/pipeline/trigger", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Manual UI Auto-pilot request" }),
+      });
+      const payload = await response.json() as { ok?: boolean; error?: string; detail?: string };
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "The mailbox run could not be started.");
+
+      setAutoPilotStage("dispatched");
+      setAutoPilotDetail(
+        payload.detail
+          || "GitHub Actions accepted the run. Checking Gmail and processing CSV reports in the background.",
+      );
+      // Watch for the job rows the run creates rather than asserting success.
+      await fetchJobs();
+      void watchForNewJobs();
+    } catch (error) {
+      setAutoPilotStage("error");
+      setAutoPilotDetail(error instanceof Error ? error.message : "The mailbox run could not be started.");
+    } finally {
+      setDispatching(false);
+    }
+  }
+
+  /**
+   * Follows the dispatched run by watching Neon for new jobs. A GitHub run
+   * queues before it starts, so absence of a job is not yet a failure.
+   */
+  async function watchForNewJobs() {
+    // Bounded by attempt count rather than wall-clock reads, which the React
+    // compiler treats as impure inside a component.
+    const intervalMs = 10_000;
+    const maxAttempts = Math.ceil((12 * 60_000) / intervalMs);
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
+      const response = await fetch("/api/gmail/jobs", { cache: "no-store" });
+      if (!response.ok) continue;
+      const data = await response.json() as { ok?: boolean; jobs?: DurableJob[] };
+      if (!data.ok || !Array.isArray(data.jobs)) continue;
+      setDbJobs(data.jobs);
+
+      const active = data.jobs.find((job) => !["completed", "failed"].includes(job.status));
+      if (active) {
+        setAutoPilotStage("running");
+        setAutoPilotDetail(
+          `Job ${active.id} is ${active.status.replace(/_/g, " ")} — ${active.report_count}/${active.row_count} report(s) generated.`,
+        );
+        await pollJob(active.id);
+        return;
+      }
+    }
+    setAutoPilotStage("dispatched");
+    setAutoPilotDetail(
+      "The run was accepted but has not created a job yet. It may have found no new CSV attachments, or GitHub may still be queuing it. Use Refresh to check again.",
+    );
+  }
+
+  /**
+   * Queues the CSV that was uploaded in this browser. Kept separate from the
+   * mailbox run: this one legitimately needs a file and a reply address.
+   */
+  async function queueUploadedCsv() {
     if (!pendingCsv) {
       setAutoPilotStage("error");
-      setAutoPilotDetail("Choose a CSV first. Auto-pilot queues it for the background worker.");
+      setAutoPilotDetail("Choose a CSV file first.");
       return;
     }
     if (!replyTo) {
       setAutoPilotStage("error");
-      setAutoPilotDetail("Enter the approved recipient address before queueing a job.");
+      setAutoPilotDetail("Enter the reply email address for the uploaded CSV.");
       return;
     }
 
@@ -444,7 +539,7 @@ export function BatchReports() {
       await pollJob(payload.job.id);
     } catch (error) {
       setAutoPilotStage("error");
-      setAutoPilotDetail(error instanceof Error ? error.message : "Auto-pilot could not queue the job.");
+      setAutoPilotDetail(error instanceof Error ? error.message : "The CSV could not be queued.");
     } finally {
       setGmailBusy(false);
     }
@@ -507,26 +602,52 @@ export function BatchReports() {
 
   return <section className="batch-reports" id="batch-reports">
     <header className="batch-heading"><div><p className="micro-label">Batch reports / CSV to evidence</p><h2>From property list to review-ready reports.</h2></div><p>Addresses are matched first. Only a validated or reviewer-approved property enters the Cotality report workflow.</p></header>
-    <div className="batch-upload"><div><FileText size={26} /><h3>Upload property CSV</h3><p>Required column: <code>address</code>, <code>property address</code>, or <code>full address</code>.</p><label className="batch-file-picker"><input type="file" accept=".csv,text/csv" onChange={upload} disabled={loadingFile} />{loadingFile ? <><LoaderCircle className="spin" size={16} /> Reading & matching</> : <>Choose CSV <ArrowRight size={16} /></>}</label><small>{fileName || "No file selected"} · <a href="/sample-property-batch.csv" download>Download sample CSV</a></small></div><aside><span>Safeguard</span><strong>Review before report</strong><p>Ambiguous units or multiple suggestions remain in the review queue. No report is generated until a candidate is selected.</p></aside></div>
+    <div className="batch-upload"><div><FileText size={26} /><h3>Upload property CSV</h3><p>Required column: <code>address</code>, <code>property address</code>, or <code>full address</code>.</p><label className="batch-file-picker"><input type="file" accept=".csv,text/csv" onChange={upload} disabled={loadingFile} />{loadingFile ? <><LoaderCircle className="spin" size={16} /> Reading & matching</> : <>Choose CSV <ArrowRight size={16} /></>}</label><small>{fileName || "No file selected"} · <a href="/sample-property-batch.csv" download>Download sample CSV</a></small>
+      {pendingCsv ? <div className="manual-queue">
+        <label>
+          <span>Reply email for this upload</span>
+          <input type="email" value={replyTo} onChange={(event) => setReplyTo(event.target.value)} placeholder="name@example.com" autoComplete="email" />
+        </label>
+        <button className="gmail-action" onClick={() => void queueUploadedCsv()} disabled={gmailBusy || loadingFile || !replyTo}>
+          {gmailBusy ? <LoaderCircle className="spin" size={14} /> : <Database size={14} />}Queue uploaded CSV
+        </button>
+        <small>Queues this file as a durable job. The background worker generates the reports and emails them to the address above.</small>
+      </div> : null}
+    </div><aside><span>Safeguard</span><strong>Review before report</strong><p>Ambiguous units or multiple suggestions remain in the review queue. No report is generated until a candidate is selected.</p></aside></div>
     <div className="gmail-dock">
       <div className="gmail-dock-mark"><Mail size={20} /><span>Inbound mailbox</span></div>
-      <div className="gmail-dock-copy"><strong>{gmail?.connected ? `Connected as ${gmail.email}` : "Automated Playwright & Gmail Pipeline"}</strong><small>Run Auto-pilot to check your Gmail inbox for CSV attachments, generate Cotality reports, and email them back to requesters.</small></div>
+      <div className="gmail-dock-copy"><strong>Scan Gmail inbox and process CSV attachments</strong><small>Auto-pilot starts a background run that reads the report mailbox over a hosted browser, generates a Cotality report for every exact address match, and replies to each sender with their reports attached. No upload needed. Runs also happen automatically every 15 minutes.</small></div>
       <div className="gmail-dock-actions">
         {gmail?.connected ? <button className="gmail-action" onClick={() => void syncGmail()} disabled={gmailBusy || loadingFile || autoPilotStage !== "idle"}>{gmailBusy ? <LoaderCircle className="spin" size={14} /> : <Mail size={14} />}Check inbox</button> : <a href="/api/gmail/connect" className="gmail-action" aria-disabled={!gmail?.configured}>Connect OAuth <ArrowRight size={14} /></a>}
-        <button className="gmail-action autopilot" onClick={() => void runAutoPilot()} disabled={gmailBusy || loadingFile || (autoPilotStage !== "idle" && autoPilotStage !== "done" && autoPilotStage !== "error")}>{autoPilotStage !== "idle" && autoPilotStage !== "done" && autoPilotStage !== "error" ? <LoaderCircle className="spin" size={14} /> : <Zap size={14} />}Auto-pilot</button>
+        <button
+          className="gmail-action autopilot"
+          onClick={() => void runMailboxPipeline()}
+          disabled={dispatching || dispatchConfigured === false}
+          title={dispatchConfigured === false ? "Mailbox runs are not configured on this deployment." : "Scan the Gmail inbox for CSV attachments"}
+        >
+          {dispatching ? <LoaderCircle className="spin" size={14} /> : <Zap size={14} />}
+          Auto-pilot: scan inbox
+        </button>
         {replyTo && complete ? <button className="gmail-action send-back" onClick={() => void replyWithReports()} disabled={gmailBusy}><Send size={14} />Send reports back</button> : null}
       </div>
       {gmailNotice ? <p className="gmail-notice">{gmailNotice}</p> : null}
     </div>
     {autoPilotStage !== "idle" ? <div className="autopilot-progress">
       <div className="autopilot-stages">
-        {(["queued", "matching", "generating", "sending"] as const).map((stage) => {
-          const stages: AutoPilotStage[] = ["queued", "matching", "generating", "sending"];
-          const currentIndex = stages.indexOf(autoPilotStage === "done" ? "sending" : autoPilotStage);
+        {(["dispatching", "dispatched", "running", "sending"] as const).map((stage) => {
+          const stages: AutoPilotStage[] = ["dispatching", "dispatched", "running", "sending"];
+          // The manual upload path reuses the later stages, so map its states
+          // onto the same indicator rather than showing nothing.
+          const normalized: AutoPilotStage =
+            autoPilotStage === "done" ? "sending"
+            : autoPilotStage === "queued" ? "dispatched"
+            : autoPilotStage === "matching" || autoPilotStage === "generating" ? "running"
+            : autoPilotStage;
+          const currentIndex = stages.indexOf(normalized);
           const stageIndex = stages.indexOf(stage);
-          const isDone = autoPilotStage === "done" || stageIndex < currentIndex;
-          const isActive = stage === autoPilotStage;
-          const isError = autoPilotStage === "error" && stageIndex === currentIndex;
+          const isDone = autoPilotStage === "done" || (currentIndex >= 0 && stageIndex < currentIndex);
+          const isActive = stage === normalized && autoPilotStage !== "error";
+          const isError = autoPilotStage === "error" && stageIndex === Math.max(currentIndex, 0);
           return <div key={stage} className={`autopilot-step${isDone ? " done" : ""}${isActive ? " active" : ""}${isError ? " error" : ""}`}>
             {isDone ? <Check size={13} /> : isActive ? <LoaderCircle className="spin" size={13} /> : isError ? <CircleDashed size={13} /> : <CircleDashed size={13} />}
             <span>{autoPilotStageLabel[stage]?.replace("…", "") || stage}</span>
