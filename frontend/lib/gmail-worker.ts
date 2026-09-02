@@ -149,10 +149,23 @@ export async function openGmailSession(config: GmailWorkerConfig): Promise<Gmail
         timezoneId: "Australia/Sydney",
       });
       if (await sessionIsValid(context)) {
-        config.logger.info("gmail.session.reused");
+        // Google rolls its session cookies forward on each use. Persist the
+        // refreshed state so continuous polling keeps the stored session
+        // current instead of replaying the original cookies until they lapse.
+        try {
+          await saveGmailSession(await context.storageState());
+          config.logger.info("gmail.session.reused", { refreshed: true });
+        } catch (error) {
+          // Losing a refresh is not fatal; the existing session still works.
+          config.logger.warn("gmail.session.refresh_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
         return { browser, context, close };
       }
-      config.logger.warn("gmail.session.expired");
+      config.logger.warn("gmail.session.rejected", {
+        note: "Stored cookies were not accepted. Usually an IP/device trust decision rather than expiry.",
+      });
       await context.close().catch(() => undefined);
       await invalidateGmailSession();
     }
