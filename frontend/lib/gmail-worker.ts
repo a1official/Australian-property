@@ -66,14 +66,29 @@ export type GmailWorkerConfig = {
   logger: Logger;
 };
 
-async function sessionIsValid(context: BrowserContext): Promise<boolean> {
+/**
+ * Probes whether a stored session still reaches the inbox.
+ *
+ * Returns false for any non-inbox outcome, including a Google challenge, rather
+ * than throwing. A challenge here only means these particular cookies are no
+ * longer trusted, so the caller must still be allowed to attempt the bounded
+ * credential login. Only a challenge during that login is terminal.
+ */
+async function sessionIsValid(context: BrowserContext): Promise<{ valid: boolean; challenged: boolean; url: string }> {
   const page = await context.newPage();
   try {
     await page.goto("https://mail.google.com/mail/u/0/#inbox", { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForTimeout(2_500);
     const url = page.url();
-    if (isChallengeUrl(url)) throw new NeedsReauthenticationError(`Google presented a challenge at ${url}`);
-    return url.startsWith("https://mail.google.com") && !url.includes("accounts.google.com");
+    if (isChallengeUrl(url)) return { valid: false, challenged: true, url };
+    return {
+      valid: url.startsWith("https://mail.google.com") && !url.includes("accounts.google.com"),
+      challenged: false,
+      url,
+    };
+  } catch {
+    // A transport failure is not evidence about the session; treat it as unusable.
+    return { valid: false, challenged: false, url: "" };
   } finally {
     await page.close().catch(() => undefined);
   }
@@ -195,10 +210,11 @@ export async function openGmailSession(config: GmailWorkerConfig): Promise<Gmail
         locale: "en-US",
         timezoneId: "Australia/Sydney",
       });
-      if (await sessionIsValid(context)) {
+      const probe = await sessionIsValid(context);
+      if (probe.valid) {
         // Google rolls its session cookies forward on each use. Persist the
-        // refreshed state so continuous polling keeps the stored session
-        // current instead of replaying the original cookies until they lapse.
+        // refreshed state so repeated runs keep the stored session current
+        // instead of replaying the original cookies until they lapse.
         try {
           await saveGmailSession(await context.storageState());
           config.logger.info("gmail.session.reused", { refreshed: true });
@@ -210,8 +226,15 @@ export async function openGmailSession(config: GmailWorkerConfig): Promise<Gmail
         }
         return { browser, context, close };
       }
+
+      // The stored session is unusable. Deliberately fall through to the
+      // bounded credential login rather than failing here: a challenged or
+      // expired cookie set must not permanently block the pipeline.
       config.logger.warn("gmail.session.rejected", {
-        note: "Stored cookies were not accepted. Usually an IP/device trust decision rather than expiry.",
+        challenged: probe.challenged,
+        note: probe.challenged
+          ? "Google challenged the stored session; attempting the bounded credential login."
+          : "Stored cookies were not accepted; attempting the bounded credential login.",
       });
       await context.close().catch(() => undefined);
       await invalidateGmailSession();
