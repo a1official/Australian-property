@@ -11,14 +11,21 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "blob:cleanup": "tsx scripts/blob-cleanup.ts",
+    "worker": "tsx scripts/render-worker.ts",
+    "worker:once": "tsx scripts/render-worker.ts --once",
     "cotality:batch": "tsx scripts/cotality-batch-reports.ts",
     "gmail:auth": "tsx scripts/gmail-auth.ts",
     "gmail:pipeline": "tsx scripts/gmail-pipeline.ts",
     "gmail:pipeline:headed": "tsx scripts/gmail-pipeline.ts -- --headed",
     "gmail:pipeline:force": "tsx scripts/gmail-pipeline.ts -- --force"
-
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
+    "@vercel/blob": "^2.8.0",
     "lucide-react": "1.31.0",
     "next": "16.3.0",
     "playwright-core": "^1.49.0",

@@ -9,10 +9,10 @@
  *   pnpm gmail:auth
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import * as nodePath from "node:path";
 import * as nodeProcess from "node:process";
-import { chromium, type BrowserContext, type Page } from "playwright";
+import { chromium, type BrowserContext } from "playwright";
 
 const ROOT_DIR = nodePath.resolve(__dirname, "..", "..");
 const LOCAL_DIR = nodePath.resolve(ROOT_DIR, ".local");
@@ -92,7 +92,7 @@ async function main() {
     await page.goto("https://mail.google.com/mail/u/0/#inbox", { waitUntil: "domcontentloaded", timeout: 30_000 });
     await page.waitForTimeout(3000);
 
-    let url = page.url();
+    const url = page.url();
     if (!url.includes("accounts.google.com") && url.includes("mail.google.com")) {
       console.log("[gmail-auth] Already logged in via persistent profile!");
     } else {

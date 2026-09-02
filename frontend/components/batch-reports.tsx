@@ -1,9 +1,29 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
-import { ArrowRight, Check, CircleDashed, FileText, LoaderCircle, Mail, Printer, Search, Send, Zap } from "lucide-react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowRight, Check, CircleDashed, Database, FileText, LoaderCircle, Mail, Printer, RefreshCw, Search, Send, Zap } from "lucide-react";
 
-type AutoPilotStage = "idle" | "syncing" | "matching" | "generating" | "sending" | "done" | "error";
+type AutoPilotStage = "idle" | "queued" | "matching" | "generating" | "sending" | "done" | "error";
+
+type DurableJob = {
+  id: string;
+  sender: string;
+  subject: string;
+  status: string;
+  attempts: number;
+  error: string | null;
+  filename: string;
+  row_count: number;
+  report_count: number;
+  review_count: number;
+  created_at: string;
+};
+
+type JobDetail = {
+  job: { id: string; status: string; error: string | null; attempts: number };
+  reports: Array<{ rowNumber: number; originalAddress: string; status: string; reportFilename: string | null; error: string | null }>;
+  replies: Array<{ status: string; reportCount: number; sentAt: string | null }>;
+};
 
 type Suggestion = { propertyId: number | string; suggestion: string };
 type MatchDetails = { propertyId?: number | string; matchType?: string; matchRule?: string; updateIndicator?: string };
@@ -219,13 +239,76 @@ export function BatchReports() {
   const [sourceMessageId, setSourceMessageId] = useState("");
   const [autoPilotStage, setAutoPilotStage] = useState<AutoPilotStage>("idle");
   const [autoPilotDetail, setAutoPilotDetail] = useState("");
+  const [pendingCsv, setPendingCsv] = useState<{ name: string; text: string } | null>(null);
+  const [jobDetail, setJobDetail] = useState<JobDetail | null>(null);
   const counts = useMemo(() => rows.reduce<Record<string, number>>((all, row) => { all[row.status] = (all[row.status] || 0) + 1; return all; }, {}), [rows]);
   const ready = rows.filter((row) => row.status === "ready").length;
   const complete = rows.filter((row) => row.status === "complete").length;
 
-  useEffect(() => {
-    void fetch("/api/gmail/status").then((response) => response.json()).then(setGmail).catch(() => setGmail(null));
+  const [dbJobs, setDbJobs] = useState<DurableJob[]>([]);
+  const [loadingJobs, setLoadingJobs] = useState(false);
+  const [adminAuthed, setAdminAuthed] = useState(false);
+  const [workerHealthy, setWorkerHealthy] = useState<boolean | null>(null);
+
+  // Durable job state comes from Neon through an authenticated route. The
+  // operator token never reaches client JS; an httpOnly session cookie is used.
+  const fetchJobs = useCallback(async () => {
+    try {
+      setLoadingJobs(true);
+      const response = await fetch("/api/gmail/jobs", { cache: "no-store" });
+      if (response.status === 401) { setAdminAuthed(false); return; }
+      const data = await response.json() as { ok?: boolean; jobs?: DurableJob[] };
+      if (data.ok && Array.isArray(data.jobs)) { setDbJobs(data.jobs); setAdminAuthed(true); }
+    } catch {
+      // transient network failure; the next poll retries
+    } finally {
+      setLoadingJobs(false);
+    }
   }, []);
+
+  const fetchWorkerHealth = useCallback(async () => {
+    try {
+      const response = await fetch("/api/worker/health", { cache: "no-store" });
+      if (!response.ok) { setWorkerHealthy(null); return; }
+      const data = await response.json() as { healthy?: boolean };
+      setWorkerHealthy(Boolean(data.healthy));
+    } catch {
+      setWorkerHealthy(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    // Defer the first fetch so the effect body itself does not call setState,
+    // which would trigger cascading renders.
+    const bootstrap = setTimeout(() => {
+      if (cancelled) return;
+      void fetch("/api/gmail/status").then((response) => response.json()).then(setGmail).catch(() => setGmail(null));
+      void fetch("/api/admin/session", { cache: "no-store" })
+        .then((response) => response.json())
+        .then((data: { authenticated?: boolean }) => { if (!cancelled) setAdminAuthed(Boolean(data.authenticated)); })
+        .catch(() => { if (!cancelled) setAdminAuthed(false); });
+      void fetchJobs();
+      void fetchWorkerHealth();
+    }, 0);
+    const interval = setInterval(() => { void fetchJobs(); void fetchWorkerHealth(); }, 10_000);
+    return () => { cancelled = true; clearTimeout(bootstrap); clearInterval(interval); };
+  }, [fetchJobs, fetchWorkerHealth]);
+
+  async function signIn(): Promise<boolean> {
+    const token = window.prompt("Enter the Parcel Atlas operator token");
+    if (!token) return false;
+    const response = await fetch("/api/admin/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (!response.ok) { setGmailNotice("That operator token was not accepted."); return false; }
+    setAdminAuthed(true);
+    await fetchJobs();
+    await fetchWorkerHealth();
+    return true;
+  }
 
   function update(id: string, patch: Partial<BatchRow>) {
     setRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row));
@@ -276,7 +359,10 @@ export function BatchReports() {
   async function upload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]; if (!file) return;
     setReplyTo(""); setSourceMessageId("");
-    await queueCsv(await file.text(), file.name);
+    const text = await file.text();
+    // Retained so Auto-pilot can hand the exact bytes to the durable job API.
+    setPendingCsv({ name: file.name, text });
+    await queueCsv(text, file.name);
     event.target.value = "";
   }
 
@@ -336,147 +422,110 @@ export function BatchReports() {
   }
 
   const autoPilotStageLabel: Record<AutoPilotStage, string> = {
-    idle: "", syncing: "Checking inbox…", matching: "Matching addresses…",
+    idle: "", queued: "Queued…", matching: "Matching addresses…",
     generating: "Generating reports…", sending: "Emailing reports…",
     done: "Auto-pilot complete.", error: "Auto-pilot encountered an error.",
   };
 
+  /**
+   * Enqueues the loaded CSV as a durable Neon job, then follows its progress.
+   * No Playwright or Cotality batch work runs in the browser or in a Vercel
+   * function: the Render worker owns execution.
+   */
   async function runAutoPilot() {
-    setGmailBusy(true); setAutoPilotStage("syncing"); setAutoPilotDetail("Starting the Browserless Gmail pipeline…"); setGmailNotice("");
-    try {
-      const start = await fetch("/api/gmail/playwright-pipeline", { method: "POST" });
-      const initial = await start.json() as { detail?: string; running?: boolean; exitCode?: number | null; lastLog?: string };
-      if (!start.ok) throw new Error(initial.detail || "Could not start the local Browserless pipeline.");
-
-      let status = initial;
-      while (status.running) {
-        setAutoPilotDetail(status.lastLog || "Browserless pipeline is checking the inbox…");
-        await new Promise((resolve) => window.setTimeout(resolve, 1_500));
-        const response = await fetch("/api/gmail/playwright-pipeline", { cache: "no-store" });
-        status = await response.json() as typeof initial;
-        if (!response.ok) throw new Error(status.detail || "Could not read Browserless pipeline status.");
-      }
-
-      if (status.exitCode !== 0) throw new Error(status.lastLog || "Browserless pipeline did not complete.");
-      setAutoPilotStage("done");
-      setAutoPilotDetail("Browserless pipeline completed. CSV reports were generated and sent by the local Gmail workflow.");
-      setGmailNotice("Auto-pilot complete through the local Browserless/Playwright pipeline.");
-    } catch (error) {
-      // Hosted deployments cannot access this workstation's saved browser
-      // profile, so retain the OAuth workflow there as the explicit fallback.
-      if (error instanceof Error && error.message.includes("only run from the local workstation")) {
-        await runOAuthAutoPilot();
-        return;
-      }
+    if (!adminAuthed && !(await signIn())) return;
+    if (!pendingCsv) {
       setAutoPilotStage("error");
-      setAutoPilotDetail(error instanceof Error ? error.message : "Browserless auto-pilot failed.");
+      setAutoPilotDetail("Choose a CSV first. Auto-pilot queues it for the background worker.");
+      return;
+    }
+    if (!replyTo) {
+      setAutoPilotStage("error");
+      setAutoPilotDetail("Enter the approved recipient address before queueing a job.");
+      return;
+    }
+
+    setGmailBusy(true); setAutoPilotStage("queued"); setAutoPilotDetail("Uploading the CSV and queueing a durable job…"); setGmailNotice("");
+    try {
+      const response = await fetch("/api/gmail/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: pendingCsv.name,
+          csvContent: pendingCsv.text,
+          sender: replyTo,
+          subject: `Parcel Atlas rent review — ${pendingCsv.name}`,
+        }),
+      });
+      const payload = await response.json() as { ok?: boolean; error?: string; created?: boolean; job?: { id: string }; rowCount?: number };
+      if (!response.ok || !payload.ok || !payload.job) throw new Error(payload.error || "The job could not be queued.");
+
+      setAutoPilotDetail(payload.created
+        ? `Job ${payload.job.id} queued with ${payload.rowCount} address row(s). Waiting for the worker…`
+        : `This CSV was already queued as ${payload.job.id}; showing its existing progress.`);
+      await fetchJobs();
+      await pollJob(payload.job.id);
+    } catch (error) {
+      setAutoPilotStage("error");
+      setAutoPilotDetail(error instanceof Error ? error.message : "Auto-pilot could not queue the job.");
     } finally {
       setGmailBusy(false);
     }
   }
 
-  async function runOAuthAutoPilot() {
-    setGmailBusy(true); setAutoPilotStage("syncing"); setAutoPilotDetail(""); setGmailNotice("");
-    try {
-      // Stage 1: Sync inbox — fetch the latest unread CSV from an approved sender
-      setAutoPilotDetail("Fetching unread CSV attachments from inbox…");
-      let incoming: { sender: string; messageId: string; subject: string; fileName: string; csv: string } | null = null;
+  /** Polls durable job state in Neon until it reaches a terminal status. */
+  async function pollJob(jobId: string) {
+    const deadline = Date.now() + 30 * 60_000;
+    while (Date.now() < deadline) {
+      const response = await fetch(`/api/gmail/jobs/${jobId}`, { cache: "no-store" });
+      if (!response.ok) { setAutoPilotStage("error"); setAutoPilotDetail("Job status could not be read."); return; }
+      const detail = await response.json() as JobDetail;
+      setJobDetail(detail);
 
-      try {
-        const syncResponse = await fetch("/api/gmail/sync", { method: "POST" });
-        const syncPayload = await syncResponse.json() as { detail?: string; imports?: Array<{ sender: string; messageId: string; subject: string; fileName: string; csv: string }> };
-        if (syncResponse.ok && syncPayload.imports?.[0]) {
-          incoming = syncPayload.imports[0];
-        }
-      } catch {
-        // Fallback to remote Playwright if OAuth sync wasn't available
+      const generated = detail.reports.filter((report) => report.status === "generated").length;
+      const review = detail.reports.filter((report) => report.status === "needs_review" || report.status === "unmatched").length;
+
+      if (detail.job.status === "queued" || detail.job.status === "claimed") {
+        setAutoPilotStage("queued");
+        setAutoPilotDetail("Waiting for the background worker to claim this job…");
+      } else if (["running", "downloaded", "matched"].includes(detail.job.status)) {
+        setAutoPilotStage("matching");
+        setAutoPilotDetail(`Matching addresses through Cotality — ${generated} report(s) so far.`);
+      } else if (detail.job.status === "report_generated") {
+        setAutoPilotStage("generating");
+        setAutoPilotDetail(`${generated} report(s) generated and stored.`);
+      } else if (detail.job.status === "replying") {
+        setAutoPilotStage("sending");
+        setAutoPilotDetail(`Emailing ${generated} report(s) to ${replyTo}…`);
+      } else if (detail.job.status === "retryable_failed") {
+        setAutoPilotStage("generating");
+        setAutoPilotDetail(`Transient failure on attempt ${detail.job.attempts}; a retry is scheduled. ${detail.job.error ?? ""}`);
+      } else if (detail.job.status === "completed") {
+        setAutoPilotStage("done");
+        setAutoPilotDetail(`Complete: ${generated} report(s) emailed to ${replyTo}.${review ? ` ${review} row(s) need manual review.` : ""}`);
+        await fetchJobs();
+        return;
+      } else if (detail.job.status === "needs_review") {
+        setAutoPilotStage("error");
+        setAutoPilotDetail(`${review} address row(s) need manual property selection. No exact Cotality match was found.`);
+        await fetchJobs();
+        return;
+      } else if (detail.job.status === "needs_reauthentication") {
+        setAutoPilotStage("error");
+        setAutoPilotDetail("Google requires manual re-authentication of the bot mailbox. The worker stopped safely without retrying credentials.");
+        await fetchJobs();
+        return;
+      } else if (detail.job.status === "failed") {
+        setAutoPilotStage("error");
+        setAutoPilotDetail(detail.job.error || "The job failed.");
+        await fetchJobs();
+        return;
       }
 
-      if (!incoming) {
-        // Try remote Playwright crawler
-        try {
-          setAutoPilotDetail("Connecting to remote browser to check inbox…");
-          const pwResponse = await fetch("/api/gmail/playwright-crawl", { method: "POST" });
-          const pwPayload = await pwResponse.json() as { success: boolean; items?: Array<{ sender: string; key: string; subject: string; fileName: string; csvContent: string; skipped: boolean }> };
-          const activeItem = pwPayload.items?.find((item) => !item.skipped && item.csvContent);
-          if (activeItem) {
-            incoming = {
-              sender: activeItem.sender,
-              messageId: activeItem.key,
-              subject: activeItem.subject,
-              fileName: activeItem.fileName,
-              csv: activeItem.csvContent,
-            };
-          }
-        } catch {
-          // Playwright remote endpoint may not be configured
-        }
-      }
-
-      if (!incoming) { setAutoPilotStage("error"); setAutoPilotDetail("No unread CSV from an approved sender was found."); return; }
-      setAutoPilotDetail(`Found ${incoming.fileName} from ${incoming.sender}.`);
-
-      // Stage 2: Parse CSV and match addresses against Cotality
-      setAutoPilotStage("matching");
-      setFileName(incoming.fileName); setLoadingFile(true); setRows([]);
-      setReplyTo(incoming.sender); setSourceMessageId(incoming.messageId);
-      const source = parseCsv(incoming.csv), headers = source[0] || [];
-      const column = headers.findIndex((header) => /^(address|property address|full address)$/i.test(header.trim()));
-      if (column < 0) { setAutoPilotStage("error"); setAutoPilotDetail("CSV requires address, property address, or full address column."); setLoadingFile(false); return; }
-      const input = source.slice(1).map((row, index) => ({ address: row[column]?.trim() || "", rowNumber: index + 2 })).filter((row) => row.address);
-      if (!input.length || input.length > 10) { setAutoPilotStage("error"); setAutoPilotDetail("Inbox CSV must contain between one and ten property addresses."); setLoadingFile(false); return; }
-      const matchedRows: BatchRow[] = [];
-      for (const item of input) {
-        setAutoPilotDetail(`Matching address ${matchedRows.length + 1} of ${input.length}…`);
-        matchedRows.push(await match(item.address, item.rowNumber));
-        setRows([...matchedRows, ...input.slice(matchedRows.length).map((next) => ({ id: String(next.rowNumber) + "-" + next.address, rowNumber: next.rowNumber, originalAddress: next.address, suggestions: [], status: "matching" as Status, note: "Queued for address matching…" }))]);
-      }
-      setLoadingFile(false);
-
-      // Only exact normalised suggestion matches are marked ready by match().
-      // A single non-exact suggestion still needs reviewer approval.
-      const autoApproved = matchedRows;
-      setRows(autoApproved);
-
-      // Stage 3: Generate reports for all ready rows
-      const readyRows = autoApproved.filter((row) => row.status === "ready");
-      if (!readyRows.length) { setAutoPilotStage("error"); setAutoPilotDetail(`No addresses could be matched. ${autoApproved.filter((r) => r.status === "review").length} need manual review, ${autoApproved.filter((r) => r.status === "unmatched").length} unmatched.`); return; }
-      setAutoPilotStage("generating");
-      let generated = 0;
-      const completedReports: Array<{ fileName: string; html: string }> = [];
-      for (const row of readyRows) {
-        if (!row.propertyId) continue;
-        generated += 1;
-        setAutoPilotDetail(`Generating report ${generated} of ${readyRows.length}…`);
-        const id = row.id;
-        setRows((current) => current.map((r) => r.id === id ? { ...r, status: "processing" as Status, note: "Loading property and comparable evidence…" } : r));
-        try {
-          const profile = await api<unknown>("/api/corelogic/properties/" + row.propertyId, 120_000);
-          const comparables = await api<unknown>("/api/corelogic/properties/" + row.propertyId + "/comparables", 120_000);
-          const report = await makeReport(row.normalizedAddress || row.originalAddress, profile, comparables);
-          completedReports.push({ fileName: `parcel-atlas-${row.propertyId}.html`, html: report });
-          setRows((current) => current.map((r) => r.id === id ? { ...r, status: "complete" as Status, note: "HTML report with embedded images ready.", report } : r));
-        } catch (error) {
-          setRows((current) => current.map((r) => r.id === id ? { ...r, status: "failed" as Status, note: "Report could not be generated.", error: error instanceof Error ? error.message : "Processing failed." } : r));
-        }
-      }
-
-      // Stage 4: Send completed reports back to the original sender
-      setAutoPilotStage("sending");
-      if (!completedReports.length) { setAutoPilotStage("error"); setAutoPilotDetail("No reports were generated successfully."); return; }
-      setAutoPilotDetail(`Sending ${completedReports.length} report${completedReports.length === 1 ? "" : "s"} to ${incoming.sender}…`);
-      const sendResponse = await fetch("/api/gmail/send", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipient: incoming.sender, subject: `Parcel Atlas rent-review reports (${completedReports.length})`, reports: completedReports, sourceMessageId: incoming.messageId }) });
-      const sendPayload = await sendResponse.json() as { detail?: string };
-      if (!sendResponse.ok) throw new Error(sendPayload.detail || "Failed to send reports.");
-
-      setAutoPilotStage("done");
-      setAutoPilotDetail(`Sent ${completedReports.length} report${completedReports.length === 1 ? "" : "s"} to ${incoming.sender}. The source email has been marked as read.`);
-      setGmailNotice(`Auto-pilot complete: ${completedReports.length} report${completedReports.length === 1 ? "" : "s"} sent to ${incoming.sender}.`);
-    } catch (error) {
-      setAutoPilotStage("error");
-      setAutoPilotDetail(error instanceof Error ? error.message : "Auto-pilot failed.");
-      setLoadingFile(false);
-    } finally { setGmailBusy(false); }
+      await new Promise((resolve) => window.setTimeout(resolve, 5_000));
+    }
+    setAutoPilotStage("error");
+    setAutoPilotDetail("Stopped following this job after 30 minutes. It continues in the background; use Refresh to check.");
   }
 
   return <section className="batch-reports" id="batch-reports">
@@ -494,9 +543,9 @@ export function BatchReports() {
     </div>
     {autoPilotStage !== "idle" ? <div className="autopilot-progress">
       <div className="autopilot-stages">
-        {(["syncing", "matching", "generating", "sending"] as const).map((stage) => {
-          const stages: AutoPilotStage[] = ["syncing", "matching", "generating", "sending"];
-          const currentIndex = stages.indexOf(autoPilotStage === "done" ? "sending" : autoPilotStage === "error" ? autoPilotStage : autoPilotStage);
+        {(["queued", "matching", "generating", "sending"] as const).map((stage) => {
+          const stages: AutoPilotStage[] = ["queued", "matching", "generating", "sending"];
+          const currentIndex = stages.indexOf(autoPilotStage === "done" ? "sending" : autoPilotStage);
           const stageIndex = stages.indexOf(stage);
           const isDone = autoPilotStage === "done" || stageIndex < currentIndex;
           const isActive = stage === autoPilotStage;
@@ -508,7 +557,49 @@ export function BatchReports() {
         })}
       </div>
       <p className="autopilot-detail">{autoPilotDetail}</p>
+      {jobDetail?.reports.length ? <ul className="autopilot-rows">
+        {jobDetail.reports.map((report) => <li key={report.rowNumber}>
+          <span className={`batch-status ${report.status}`}>{report.status.replace("_", " ")}</span>
+          <span>{report.originalAddress}</span>
+          {report.error ? <small>{report.error}</small> : null}
+        </li>)}
+      </ul> : null}
     </div> : null}
+    <div className="durable-jobs">
+      <div className="durable-jobs-head">
+        <div>
+          <Database size={17} />
+          <strong>Durable pipeline jobs</strong>
+          <span className={`worker-pill ${workerHealthy === true ? "ok" : workerHealthy === false ? "down" : "unknown"}`}>
+            {workerHealthy === true ? "Worker online" : workerHealthy === false ? "Worker offline" : "Worker status unknown"}
+          </span>
+        </div>
+        <div>
+          {adminAuthed
+            ? <button onClick={() => void fetchJobs()} disabled={loadingJobs}><RefreshCw size={12} className={loadingJobs ? "spin" : ""} /> Refresh</button>
+            : <button onClick={() => void signIn()}>Sign in to view jobs</button>}
+        </div>
+      </div>
+      {!adminAuthed
+        ? <p className="durable-jobs-empty">Job state is stored in Neon and requires the operator token.</p>
+        : dbJobs.length
+          ? <div className="durable-jobs-list">
+              {dbJobs.map((job) => <div key={job.id} className="durable-job">
+                <div>
+                  <strong>{job.sender}</strong>
+                  <span> · {job.filename || job.subject}</span>
+                  <small>{new Date(job.created_at).toLocaleString("en-AU")}{job.attempts > 1 ? ` · attempt ${job.attempts}` : ""}</small>
+                  {job.error ? <small className="durable-job-error">{job.error}</small> : null}
+                </div>
+                <div>
+                  <span>{job.report_count} / {job.row_count} reports</span>
+                  {job.review_count > 0 ? <span className="review-count">{job.review_count} to review</span> : null}
+                  <span className={`batch-status ${job.status}`}>{job.status.replace(/_/g, " ")}</span>
+                </div>
+              </div>)}
+            </div>
+          : <p className="durable-jobs-empty">No jobs recorded yet. Queue a CSV with Auto-pilot or email one to the bot mailbox.</p>}
+    </div>
     {rows.length ? <><div className="batch-stats"><div><span>Rows</span><strong>{rows.length}</strong></div><div><span>Ready</span><strong>{counts.ready || 0}</strong></div><div><span>Review</span><strong>{counts.review || 0}</strong></div><div><span>Completed</span><strong>{complete}</strong></div><button onClick={() => void processBatch()} disabled={!ready || loadingFile}>{ready ? "Generate " + ready + " report" + (ready === 1 ? "" : "s") : "No approved reports"} <ArrowRight size={16} /></button></div>
       <div className="batch-ledger"><div className="batch-ledger-heading"><span>CSV row</span><span>Original input</span><span>Match decision</span><span>Report status</span></div>{rows.map((row) => <article key={row.id}><span className="batch-row-number">{row.rowNumber || "!"}</span><div className="batch-address"><strong>{row.originalAddress || "CSV format error"}</strong>{row.normalizedAddress && row.normalizedAddress !== row.originalAddress ? <small>Normalized: {row.normalizedAddress}</small> : null}</div><div className="batch-match"><span className={"batch-status " + row.status}>{row.status === "complete" || row.status === "ready" ? <Check size={13} /> : row.status === "matching" || row.status === "processing" ? <LoaderCircle className="spin" size={13} /> : <CircleDashed size={13} />}{row.status}</span><p>{row.note}</p>{row.status === "review" ? <div className="batch-suggestions">{row.suggestions.map((suggestion, index) => <button key={String(suggestion.propertyId) + "-" + index} onClick={() => approve(row, suggestion)}><Search size={13} />{suggestion.suggestion}</button>)}</div> : null}</div><div className="batch-output">{row.status === "complete" && row.report ? <><button onClick={() => saveFile("parcel-atlas-" + row.propertyId + ".html", row.report || "")}><FileText size={14} />Download HTML</button><button className="pdf-button" onClick={() => saveAsPdf(row.report || "")}><Printer size={14} />Save as PDF</button></> : row.status === "failed" ? <span className="batch-error">{row.error}</span> : <span>—</span>}</div></article>)}</div>
       {complete ? <div className="batch-export"><span>{complete} HTML report{complete === 1 ? "" : "s"} ready in this browser session.</span><button onClick={() => saveFile("parcel-atlas-batch-index.html", "<!doctype html><title>Parcel Atlas batch</title><h1>Parcel Atlas batch reports</h1><p>Generated " + new Date().toLocaleString("en-AU") + "</p>")}>Download batch index <ArrowRight size={15} /></button></div> : null}

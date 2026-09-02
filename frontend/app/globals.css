@@ -437,3 +437,32 @@ button, input { font: inherit; } button, a { -webkit-tap-highlight-color: transp
   .gmail-dock { display: block; }.gmail-dock-mark { flex-direction: row; min-height: 48px; }.gmail-dock-copy { padding: 20px; }.gmail-dock-actions { padding: 0 20px 20px; }.gmail-notice { padding: 12px 20px 18px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; } }
+
+/* Durable job ledger and worker health (Neon-backed pipeline state) */
+.autopilot-rows { display: grid; gap: 4px; list-style: none; margin: 14px 0 0; padding: 0; }
+.autopilot-rows li { align-items: center; background: rgba(255,255,255,.04); border-radius: 3px; color: rgba(255,255,255,.7); display: flex; flex-wrap: wrap; font-size: 8px; gap: 9px; padding: 7px 10px; }
+.autopilot-rows small { color: #f0a4a4; font-size: 7px; width: 100%; }
+.durable-jobs { background: #162326; margin: 1px auto 0; max-width: 1310px; padding: 18px 24px 20px; }
+.durable-jobs-head { align-items: center; display: flex; justify-content: space-between; gap: 14px; }
+.durable-jobs-head > div { align-items: center; color: white; display: flex; gap: 9px; }
+.durable-jobs-head strong { font-family: var(--display); font-size: 17px; font-weight: 400; }
+.durable-jobs-head button { align-items: center; background: transparent; border: 1px solid rgba(255,255,255,.22); color: rgba(255,255,255,.75); cursor: pointer; display: inline-flex; font-size: 7px; gap: 7px; letter-spacing: .1em; padding: 7px 11px; text-transform: uppercase; }
+.durable-jobs-head button:disabled { cursor: not-allowed; opacity: .5; }
+.worker-pill { border-radius: 99px; font-size: 7px; letter-spacing: .09em; padding: 4px 9px; text-transform: uppercase; }
+.worker-pill.ok { background: rgba(20,184,166,.22); color: #5eead4; }
+.worker-pill.down { background: rgba(239,68,68,.2); color: #fca5a5; }
+.worker-pill.unknown { background: rgba(255,255,255,.1); color: rgba(255,255,255,.55); }
+.durable-jobs-empty { color: rgba(255,255,255,.45); font-size: 9px; line-height: 1.5; margin: 14px 0 0; }
+.durable-jobs-list { display: grid; gap: 6px; margin-top: 15px; }
+.durable-job { align-items: center; background: rgba(255,255,255,.04); display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; padding: 11px 13px; }
+.durable-job > div { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
+.durable-job strong { color: white; font-size: 10px; }
+.durable-job span { color: rgba(255,255,255,.6); font-size: 9px; }
+.durable-job small { color: rgba(255,255,255,.38); font-size: 7px; width: 100%; }
+.durable-job small.durable-job-error { color: #f0a4a4; }
+.durable-job .review-count { color: #fcd34d; }
+.batch-status.completed { background: var(--acid); border-color: var(--acid); color: var(--ink); }
+.batch-status.failed, .batch-status.needs_reauthentication { background: rgba(239,68,68,.2); border-color: rgba(239,68,68,.45); color: #fca5a5; }
+.batch-status.needs_review, .batch-status.retryable_failed { background: rgba(252,211,77,.16); border-color: rgba(252,211,77,.4); color: #fcd34d; }
+.batch-status.queued, .batch-status.claimed { background: rgba(255,255,255,.09); color: rgba(255,255,255,.68); }
+.batch-status.running, .batch-status.downloaded, .batch-status.matched, .batch-status.report_generated, .batch-status.replying { background: rgba(59,130,246,.18); border-color: rgba(59,130,246,.4); color: #93c5fd; }
