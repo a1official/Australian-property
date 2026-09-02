@@ -448,6 +448,11 @@ button, input { font: inherit; } button, a { -webkit-tap-highlight-color: transp
 .durable-jobs-head strong { font-family: var(--display); font-size: 17px; font-weight: 400; }
 .durable-jobs-head button { align-items: center; background: transparent; border: 1px solid rgba(255,255,255,.22); color: rgba(255,255,255,.75); cursor: pointer; display: inline-flex; font-size: 7px; gap: 7px; letter-spacing: .1em; padding: 7px 11px; text-transform: uppercase; }
 .durable-jobs-head button:disabled { cursor: not-allowed; opacity: .5; }
+.operator-sign-in { align-items: center; display: flex; gap: 6px; }
+.operator-sign-in input { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.22); color: white; font: inherit; font-size: 8px; letter-spacing: .04em; outline-offset: 2px; padding: 8px 10px; width: 170px; }
+.operator-sign-in input::placeholder { color: rgba(255,255,255,.42); }
+.operator-sign-in input:focus { border-color: var(--acid); }
+.sr-only { height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .worker-pill { border-radius: 99px; font-size: 7px; letter-spacing: .09em; padding: 4px 9px; text-transform: uppercase; }
 .worker-pill.ok { background: rgba(20,184,166,.22); color: #5eead4; }
 .worker-pill.down { background: rgba(239,68,68,.2); color: #fca5a5; }

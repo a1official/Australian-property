@@ -249,6 +249,8 @@ export function BatchReports() {
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [adminAuthed, setAdminAuthed] = useState(false);
   const [workerHealthy, setWorkerHealthy] = useState<boolean | null>(null);
+  const [operatorToken, setOperatorToken] = useState("");
+  const [signingIn, setSigningIn] = useState(false);
 
   // Durable job state comes from Neon through an authenticated route. The
   // operator token never reaches client JS; an httpOnly session cookie is used.
@@ -296,18 +298,31 @@ export function BatchReports() {
   }, [fetchJobs, fetchWorkerHealth]);
 
   async function signIn(): Promise<boolean> {
-    const token = window.prompt("Enter the Parcel Atlas operator token");
-    if (!token) return false;
-    const response = await fetch("/api/admin/session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
-    });
-    if (!response.ok) { setGmailNotice("That operator token was not accepted."); return false; }
-    setAdminAuthed(true);
-    await fetchJobs();
-    await fetchWorkerHealth();
-    return true;
+    const token = operatorToken.trim();
+    if (!token) {
+      setGmailNotice("Enter the operator token below to view jobs or queue a report.");
+      return false;
+    }
+    setSigningIn(true);
+    try {
+      const response = await fetch("/api/admin/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      if (!response.ok) { setGmailNotice("That operator token was not accepted."); return false; }
+      setOperatorToken("");
+      setGmailNotice("");
+      setAdminAuthed(true);
+      await fetchJobs();
+      await fetchWorkerHealth();
+      return true;
+    } catch {
+      setGmailNotice("Could not verify the operator token. Check the local server and try again.");
+      return false;
+    } finally {
+      setSigningIn(false);
+    }
   }
 
   function update(id: string, patch: Partial<BatchRow>) {
@@ -577,7 +592,11 @@ export function BatchReports() {
         <div>
           {adminAuthed
             ? <button onClick={() => void fetchJobs()} disabled={loadingJobs}><RefreshCw size={12} className={loadingJobs ? "spin" : ""} /> Refresh</button>
-            : <button onClick={() => void signIn()}>Sign in to view jobs</button>}
+            : <form className="operator-sign-in" onSubmit={(event) => { event.preventDefault(); void signIn(); }}>
+                <label className="sr-only" htmlFor="operator-token">Operator token</label>
+                <input id="operator-token" type="password" autoComplete="current-password" placeholder="Operator token" value={operatorToken} onChange={(event) => setOperatorToken(event.target.value)} />
+                <button type="submit" disabled={signingIn}>{signingIn ? <LoaderCircle size={12} className="spin" /> : null}{signingIn ? "Checking" : "Unlock jobs"}</button>
+              </form>}
         </div>
       </div>
       {!adminAuthed
