@@ -42,16 +42,18 @@ jobs:
     steps:
       - name: Check out the pinned main revision
         uses: actions/checkout@v4
+      # setup-node resolves the pnpm cache path during initialization, so pnpm
+      # must be installed before caching is enabled.
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 22.18.0
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.32.1
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       # Finite by design: it processes one job, or checks the inbox once, then exits.
