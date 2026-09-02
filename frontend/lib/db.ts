@@ -251,6 +251,17 @@ const SCHEMA_STATEMENTS = [
     valid BOOLEAN NOT NULL DEFAULT TRUE,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
+  // Password-login attempts are rate limited in the database rather than in
+  // process memory, so a worker restart cannot reset the counter and hammer
+  // Google. Repeated automated login failures are what trigger account locks.
+  `CREATE TABLE IF NOT EXISTS gmail_login_attempts (
+    id TEXT PRIMARY KEY,
+    attempts INT NOT NULL DEFAULT 0,
+    last_attempt_at TIMESTAMPTZ,
+    last_outcome TEXT,
+    cooldown_until TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
 ];
 
 /**
@@ -675,6 +686,83 @@ export async function saveGmailSession(storageState: object, id = "default"): Pr
 
 export async function invalidateGmailSession(id = "default"): Promise<void> {
   await getPool().query("UPDATE gmail_sessions SET valid = FALSE, updated_at = NOW() WHERE id = $1", [id]);
+}
+
+// ---------------------------------------------------------------------------
+// Password-login rate limiting
+// ---------------------------------------------------------------------------
+
+export const MAX_LOGIN_ATTEMPTS = 3;
+
+export type LoginGate =
+  | { allowed: true; attempts: number }
+  | { allowed: false; reason: string; retryAfter: Date | null; attempts: number };
+
+/**
+ * Decides whether a password login may be attempted.
+ *
+ * Automated Google logins must be rare. Consecutive failures escalate a
+ * cooldown, and exceeding MAX_LOGIN_ATTEMPTS stops automatic attempts entirely
+ * until an operator clears the gate, which protects the account from a lock.
+ */
+export async function checkLoginGate(id = "default"): Promise<LoginGate> {
+  const { rows } = await getPool().query<{ attempts: number; cooldown_until: string | null }>(
+    "SELECT attempts, cooldown_until FROM gmail_login_attempts WHERE id = $1 LIMIT 1",
+    [id],
+  );
+  const record = rows[0];
+  if (!record) return { allowed: true, attempts: 0 };
+
+  if (record.cooldown_until && new Date(record.cooldown_until) > new Date()) {
+    return {
+      allowed: false,
+      reason: `Login cooldown active until ${record.cooldown_until}.`,
+      retryAfter: new Date(record.cooldown_until),
+      attempts: record.attempts,
+    };
+  }
+  if (record.attempts >= MAX_LOGIN_ATTEMPTS) {
+    return {
+      allowed: false,
+      reason: `${record.attempts} consecutive failed login attempts. Automatic login is disabled to protect the account from being locked. Clear it with: pnpm tsx scripts/reset-login-gate.ts`,
+      retryAfter: null,
+      attempts: record.attempts,
+    };
+  }
+  return { allowed: true, attempts: record.attempts };
+}
+
+/** Records a failed login and escalates the cooldown (15m, 1h, 4h). */
+export async function recordLoginFailure(reason: string, id = "default"): Promise<void> {
+  const cooldownMinutes = [15, 60, 240];
+  await getPool().query(
+    `INSERT INTO gmail_login_attempts (id, attempts, last_attempt_at, last_outcome, cooldown_until, updated_at)
+     VALUES ($1, 1, NOW(), $2, NOW() + ($3 || ' minutes')::interval, NOW())
+     ON CONFLICT (id) DO UPDATE
+       SET attempts = gmail_login_attempts.attempts + 1,
+           last_attempt_at = NOW(),
+           last_outcome = EXCLUDED.last_outcome,
+           cooldown_until = NOW() + (
+             (ARRAY[15, 60, 240])[LEAST(gmail_login_attempts.attempts + 1, 3)] || ' minutes'
+           )::interval,
+           updated_at = NOW()`,
+    [id, reason.slice(0, 500), String(cooldownMinutes[0])],
+  );
+}
+
+/** Clears the counter after a successful login. */
+export async function recordLoginSuccess(id = "default"): Promise<void> {
+  await getPool().query(
+    `INSERT INTO gmail_login_attempts (id, attempts, last_attempt_at, last_outcome, cooldown_until, updated_at)
+     VALUES ($1, 0, NOW(), 'success', NULL, NOW())
+     ON CONFLICT (id) DO UPDATE
+       SET attempts = 0, last_attempt_at = NOW(), last_outcome = 'success', cooldown_until = NULL, updated_at = NOW()`,
+    [id],
+  );
+}
+
+export async function resetLoginGate(id = "default"): Promise<void> {
+  await getPool().query("DELETE FROM gmail_login_attempts WHERE id = $1", [id]);
 }
 
 // ---------------------------------------------------------------------------

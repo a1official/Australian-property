@@ -22,6 +22,14 @@ const REAUTH_PATTERNS = [
   /verify (?:it'?s )?you/i,
   /signin\/v2\/challenge/i,
   /account (?:disabled|locked)/i,
+  // Login rate limiting and credential rejection must stop the worker rather
+  // than be retried: repeated automated attempts are what lock an account.
+  /consecutive failed login attempts/i,
+  /automatic login is disabled/i,
+  /login cooldown active/i,
+  /rejected the stored gmail_password/i,
+  /did not present a password field/i,
+  /manual sign-?in is required/i,
 ];
 
 const PERMANENT_PATTERNS = [

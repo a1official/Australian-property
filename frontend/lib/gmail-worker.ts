@@ -8,7 +8,14 @@
 
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 
-import { invalidateGmailSession, loadGmailSession, saveGmailSession } from "./db";
+import {
+  checkLoginGate,
+  invalidateGmailSession,
+  loadGmailSession,
+  recordLoginFailure,
+  recordLoginSuccess,
+  saveGmailSession,
+} from "./db";
 import type { Logger } from "./logger";
 import { redact } from "./logger";
 
@@ -80,13 +87,35 @@ async function performLogin(page: Page, config: GmailWorkerConfig): Promise<void
     waitUntil: "domcontentloaded",
     timeout: 45_000,
   });
-  await page.waitForTimeout(2_000);
+  await page.waitForTimeout(2_500);
+
+  // Google often lands on the account chooser when it recognises the account
+  // but distrusts the session. Selecting the account (or "Use another account")
+  // is required before an email or password field is ever rendered.
+  if (page.url().includes("accountchooser") || page.url().includes("selectaccount")) {
+    logger.info("gmail.login.account_chooser");
+    const existing = page
+      .locator(`[data-email="${username}"], [data-identifier="${username}"], li:has-text("${username}")`)
+      .first();
+    if (await existing.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await existing.click();
+      await page.waitForTimeout(3_500);
+    } else {
+      const another = page
+        .locator('[jsname] :text("Use another account"), li:has-text("Use another account"), div:has-text("Use another account")')
+        .first();
+      if (await another.isVisible({ timeout: 4_000 }).catch(() => false)) {
+        await another.click();
+        await page.waitForTimeout(3_000);
+      }
+    }
+  }
 
   const emailInput = page.locator('input[type="email"], input[name="identifier"]').first();
   if (await emailInput.isVisible({ timeout: 8_000 }).catch(() => false)) {
     await emailInput.fill(username);
     await page.keyboard.press("Enter");
-    await page.waitForTimeout(3_500);
+    await page.waitForTimeout(4_000);
   }
 
   if (isChallengeUrl(page.url())) {
@@ -96,10 +125,28 @@ async function performLogin(page: Page, config: GmailWorkerConfig): Promise<void
   const passwordInput = page
     .locator('input[name="Passwd"], input[type="password"]:not([name="hiddenPassword"]):not([aria-hidden="true"])')
     .first();
-  await passwordInput.waitFor({ state: "visible", timeout: 25_000 });
+  const passwordVisible = await passwordInput.waitFor({ state: "visible", timeout: 25_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (!passwordVisible) {
+    // No password field means Google diverted the flow. Report where it went
+    // instead of failing with an opaque selector timeout.
+    throw new NeedsReauthenticationError(
+      `Google did not present a password field; the flow stopped at ${redact(page.url())}. Manual sign-in is required.`,
+    );
+  }
   await passwordInput.fill(password);
   await page.keyboard.press("Enter");
   await page.waitForTimeout(6_000);
+
+  // A rejected password must be distinguished from a challenge: retrying a
+  // wrong password is what locks an account.
+  const wrongPassword = page.locator(':text("Wrong password"), :text("Couldn\'t sign you in")').first();
+  if (await wrongPassword.isVisible({ timeout: 3_000 }).catch(() => false)) {
+    throw new NeedsReauthenticationError(
+      "Google rejected the stored GMAIL_PASSWORD. Automatic login stopped to avoid locking the account.",
+    );
+  }
 
   if (isChallengeUrl(page.url())) {
     throw new NeedsReauthenticationError(
@@ -176,6 +223,15 @@ export async function openGmailSession(config: GmailWorkerConfig): Promise<Gmail
       );
     }
 
+    // Gate the password login. Without this, a 60s poll loop would retry the
+    // credentials every cycle and get the account locked.
+    const gate = await checkLoginGate();
+    if (!gate.allowed) {
+      config.logger.error("gmail.login.blocked", { reason: gate.reason, attempts: gate.attempts });
+      throw new NeedsReauthenticationError(gate.reason);
+    }
+    config.logger.info("gmail.login.attempting", { priorFailures: gate.attempts });
+
     const context = await browser.newContext({
       userAgent: USER_AGENT,
       viewport: { width: 1280, height: 900 },
@@ -185,11 +241,18 @@ export async function openGmailSession(config: GmailWorkerConfig): Promise<Gmail
     const page = await context.newPage();
     try {
       await performLogin(page, config);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await recordLoginFailure(message);
+      await context.close().catch(() => undefined);
+      throw error;
     } finally {
       await page.close().catch(() => undefined);
     }
+
     await saveGmailSession(await context.storageState());
-    config.logger.info("gmail.session.saved");
+    await recordLoginSuccess();
+    config.logger.info("gmail.session.saved", { source: "password_login" });
     return { browser, context, close };
   } catch (error) {
     await close();
