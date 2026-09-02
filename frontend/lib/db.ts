@@ -17,7 +17,10 @@ import { resolve } from "node:path";
 // ---------------------------------------------------------------------------
 
 function getDatabaseUrl(): string {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  const configured = process.env.DATABASE_URL?.trim().replace(/^['"]|['"]$/g, "");
+  // Some local templates contain a redacted marker. Treat it as unset so the
+  // development fallback can use the repository-level .env instead.
+  if (configured && !/^\[SENSITIVE\]$|YOUR-POOLER-HOST/i.test(configured)) return configured;
   // Local development only. Production always injects the variable.
   if (process.env.NODE_ENV !== "production") {
     for (const envPath of [resolve(process.cwd(), ".env"), resolve(process.cwd(), "..", ".env")]) {
@@ -251,16 +254,20 @@ const SCHEMA_STATEMENTS = [
     valid BOOLEAN NOT NULL DEFAULT TRUE,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
-  // Password-login attempts are rate limited in the database rather than in
-  // process memory, so a worker restart cannot reset the counter and hammer
-  // Google. Repeated automated login failures are what trigger account locks.
-  `CREATE TABLE IF NOT EXISTS gmail_login_attempts (
+  // One connected Gmail mailbox via OAuth. The refresh token is stored
+  // encrypted (AES-256-GCM); this table must never hold plaintext credentials.
+  `CREATE TABLE IF NOT EXISTS gmail_oauth_connections (
     id TEXT PRIMARY KEY,
-    attempts INT NOT NULL DEFAULT 0,
-    last_attempt_at TIMESTAMPTZ,
-    last_outcome TEXT,
-    cooldown_until TIMESTAMPTZ,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    provider TEXT NOT NULL DEFAULT 'google',
+    email_masked TEXT NOT NULL,
+    email_hash TEXT NOT NULL,
+    refresh_token_encrypted TEXT,
+    scopes TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'connected',
+    error_code TEXT,
+    connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ
   )`,
 ];
 
@@ -663,106 +670,101 @@ export async function recordHeartbeat(params: {
 }
 
 // ---------------------------------------------------------------------------
-// Gmail session persistence (Blob/Neon is the source of truth, not .local)
+// Gmail OAuth connection
 // ---------------------------------------------------------------------------
 
-export async function loadGmailSession(id = "default"): Promise<object | null> {
-  const { rows } = await getPool().query<{ storage_state: object; valid: boolean }>(
-    "SELECT storage_state, valid FROM gmail_sessions WHERE id = $1 LIMIT 1",
+export type GmailConnectionStatus = "connected" | "needs_reauthorization" | "disconnected";
+
+export interface GmailOAuthConnection {
+  id: string;
+  provider: string;
+  email_masked: string;
+  email_hash: string;
+  refresh_token_encrypted: string | null;
+  scopes: string;
+  status: GmailConnectionStatus;
+  error_code: string | null;
+  connected_at: string;
+  updated_at: string;
+  last_used_at: string | null;
+}
+
+export async function getGmailConnection(id = "default"): Promise<GmailOAuthConnection | null> {
+  const { rows } = await getPool().query<GmailOAuthConnection>(
+    "SELECT * FROM gmail_oauth_connections WHERE id = $1 LIMIT 1",
     [id],
   );
-  const record = rows[0];
-  return record?.valid ? record.storage_state : null;
+  return rows[0] ?? null;
 }
-
-export async function saveGmailSession(storageState: object, id = "default"): Promise<void> {
-  await getPool().query(
-    `INSERT INTO gmail_sessions (id, storage_state, valid, updated_at)
-     VALUES ($1, $2::jsonb, TRUE, NOW())
-     ON CONFLICT (id) DO UPDATE SET storage_state = EXCLUDED.storage_state, valid = TRUE, updated_at = NOW()`,
-    [id, JSON.stringify(storageState)],
-  );
-}
-
-export async function invalidateGmailSession(id = "default"): Promise<void> {
-  await getPool().query("UPDATE gmail_sessions SET valid = FALSE, updated_at = NOW() WHERE id = $1", [id]);
-}
-
-// ---------------------------------------------------------------------------
-// Password-login rate limiting
-// ---------------------------------------------------------------------------
-
-export const MAX_LOGIN_ATTEMPTS = 3;
-
-export type LoginGate =
-  | { allowed: true; attempts: number }
-  | { allowed: false; reason: string; retryAfter: Date | null; attempts: number };
 
 /**
- * Decides whether a password login may be attempted.
- *
- * Automated Google logins must be rare. Consecutive failures escalate a
- * cooldown, and exceeding MAX_LOGIN_ATTEMPTS stops automatic attempts entirely
- * until an operator clears the gate, which protects the account from a lock.
+ * Saves a connection. Google omits the refresh token when re-consenting for an
+ * already-authorized account, so a null token preserves the stored one rather
+ * than destroying a working grant.
  */
-export async function checkLoginGate(id = "default"): Promise<LoginGate> {
-  const { rows } = await getPool().query<{ attempts: number; cooldown_until: string | null }>(
-    "SELECT attempts, cooldown_until FROM gmail_login_attempts WHERE id = $1 LIMIT 1",
-    [id],
-  );
-  const record = rows[0];
-  if (!record) return { allowed: true, attempts: 0 };
-
-  if (record.cooldown_until && new Date(record.cooldown_until) > new Date()) {
-    return {
-      allowed: false,
-      reason: `Login cooldown active until ${record.cooldown_until}.`,
-      retryAfter: new Date(record.cooldown_until),
-      attempts: record.attempts,
-    };
-  }
-  if (record.attempts >= MAX_LOGIN_ATTEMPTS) {
-    return {
-      allowed: false,
-      reason: `${record.attempts} consecutive failed login attempts. Automatic login is disabled to protect the account from being locked. Clear it with: pnpm tsx scripts/reset-login-gate.ts`,
-      retryAfter: null,
-      attempts: record.attempts,
-    };
-  }
-  return { allowed: true, attempts: record.attempts };
-}
-
-/** Records a failed login and escalates the cooldown (15m, 1h, 4h). */
-export async function recordLoginFailure(reason: string, id = "default"): Promise<void> {
-  const cooldownMinutes = [15, 60, 240];
+export async function saveGmailConnection(params: {
+  id?: string;
+  emailMasked: string;
+  emailHash: string;
+  refreshTokenEncrypted: string | null;
+  scopes: string;
+}): Promise<void> {
   await getPool().query(
-    `INSERT INTO gmail_login_attempts (id, attempts, last_attempt_at, last_outcome, cooldown_until, updated_at)
-     VALUES ($1, 1, NOW(), $2, NOW() + ($3 || ' minutes')::interval, NOW())
+    `INSERT INTO gmail_oauth_connections
+       (id, provider, email_masked, email_hash, refresh_token_encrypted, scopes, status, error_code, connected_at, updated_at)
+     VALUES ($1, 'google', $2, $3, $4, $5, 'connected', NULL, NOW(), NOW())
      ON CONFLICT (id) DO UPDATE
-       SET attempts = gmail_login_attempts.attempts + 1,
-           last_attempt_at = NOW(),
-           last_outcome = EXCLUDED.last_outcome,
-           cooldown_until = NOW() + (
-             (ARRAY[15, 60, 240])[LEAST(gmail_login_attempts.attempts + 1, 3)] || ' minutes'
-           )::interval,
+       SET email_masked = EXCLUDED.email_masked,
+           email_hash = EXCLUDED.email_hash,
+           refresh_token_encrypted = COALESCE(EXCLUDED.refresh_token_encrypted, gmail_oauth_connections.refresh_token_encrypted),
+           scopes = EXCLUDED.scopes,
+           status = 'connected',
+           error_code = NULL,
            updated_at = NOW()`,
-    [id, reason.slice(0, 500), String(cooldownMinutes[0])],
+    [params.id ?? "default", params.emailMasked, params.emailHash, params.refreshTokenEncrypted, params.scopes],
   );
 }
 
-/** Clears the counter after a successful login. */
-export async function recordLoginSuccess(id = "default"): Promise<void> {
+export async function markGmailConnectionStatus(
+  status: GmailConnectionStatus,
+  errorCode: string | null,
+  id = "default",
+): Promise<void> {
   await getPool().query(
-    `INSERT INTO gmail_login_attempts (id, attempts, last_attempt_at, last_outcome, cooldown_until, updated_at)
-     VALUES ($1, 0, NOW(), 'success', NULL, NOW())
-     ON CONFLICT (id) DO UPDATE
-       SET attempts = 0, last_attempt_at = NOW(), last_outcome = 'success', cooldown_until = NULL, updated_at = NOW()`,
+    `UPDATE gmail_oauth_connections
+        SET status = $2, error_code = $3, updated_at = NOW()
+      WHERE id = $1`,
+    [id, status, errorCode],
+  );
+}
+
+export async function touchGmailConnection(id = "default"): Promise<void> {
+  await getPool().query(
+    "UPDATE gmail_oauth_connections SET last_used_at = NOW(), updated_at = NOW() WHERE id = $1",
     [id],
   );
 }
 
-export async function resetLoginGate(id = "default"): Promise<void> {
-  await getPool().query("DELETE FROM gmail_login_attempts WHERE id = $1", [id]);
+/** Clears the stored grant so no encrypted token is retained after disconnect. */
+export async function deleteGmailConnection(id = "default"): Promise<void> {
+  await getPool().query(
+    `UPDATE gmail_oauth_connections
+        SET refresh_token_encrypted = NULL, status = 'disconnected', error_code = NULL, updated_at = NOW()
+      WHERE id = $1`,
+    [id],
+  );
+}
+
+/** Safe read model for the browser: never includes token material. */
+export async function getGmailConnectionSummary(id = "default") {
+  const sql = getDb();
+  const rows = (await sql.query(
+    `SELECT email_masked, scopes, status, error_code, connected_at, updated_at, last_used_at,
+            (refresh_token_encrypted IS NOT NULL) AS has_token
+       FROM gmail_oauth_connections WHERE id = $1 LIMIT 1`,
+    [id],
+  )) as Array<Record<string, unknown>>;
+  return rows[0] ?? null;
 }
 
 // ---------------------------------------------------------------------------

@@ -69,7 +69,11 @@ export function buildIdempotencyKey(input: {
   fileName: string;
   csvContent: string;
 }): string {
-  const identity = input.threadId?.trim() || input.messageId?.trim() || `sender:${input.sender.trim().toLowerCase()}`;
+  // Prefer the Gmail message id: a thread can carry several messages, each with
+  // its own attachment, and those are genuinely distinct jobs. Falling back to
+  // thread then sender keeps manual uploads and legacy rows stable.
+  const identity =
+    input.messageId?.trim() || input.threadId?.trim() || `sender:${input.sender.trim().toLowerCase()}`;
   const raw = [identity, input.fileName.trim().toLowerCase(), csvContentHash(input.csvContent)].join("|");
   return createHash("sha256").update(raw, "utf8").digest("hex").slice(0, 40);
 }

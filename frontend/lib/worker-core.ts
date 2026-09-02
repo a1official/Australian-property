@@ -34,7 +34,13 @@ export type WorkerDeps = {
   uploadReport(input: { filename: string; html: string }): Promise<{ pathname: string }>;
   readReport(pathname: string): Promise<string>;
   updateRow(input: Parameters<typeof import("./db").updatePropertyRow>[0]): Promise<void>;
-  sendReply(input: { recipient: string; subject: string; attachments: Array<{ name: string; mimeType: string; buffer: Buffer }> }): Promise<void>;
+  sendReply(input: {
+    recipient: string;
+    subject: string;
+    attachments: Array<{ name: string; mimeType: string; buffer: Buffer }>;
+    /** Rows left for manual review, so the reply can say so honestly. */
+    reviewCount: number;
+  }): Promise<void>;
   hasSentReply(): Promise<boolean>;
   recordReply(input: { reportCount: number; status: "sent" | "failed"; error?: string | null }): Promise<void>;
   markGmailHandled(): Promise<void>;
@@ -175,6 +181,7 @@ export async function deliverReply(
       recipient: job.sender,
       subject: buildReplySubject(job.subject, attachments.length),
       attachments,
+      reviewCount: reviewRows(rows).length,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

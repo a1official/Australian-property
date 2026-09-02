@@ -45,9 +45,9 @@ test("secrets are referenced, never inlined", () => {
   for (const key of [
     "DATABASE_URL",
     "BLOB_READ_WRITE_TOKEN",
-    "BROWSERLESS_API_KEY",
-    "GMAIL_USERNAME",
-    "GMAIL_PASSWORD",
+    "GMAIL_CLIENT_ID",
+    "GMAIL_CLIENT_SECRET",
+    "GMAIL_TOKEN_ENCRYPTION_KEY",
   ]) {
     const pattern = new RegExp(`${key}:\\s*\\$\\{\\{\\s*secrets\\.${key}\\s*\\}\\}`);
     assert.match(workflow, pattern, `${key} must come from repository secrets`);

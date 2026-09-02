@@ -52,8 +52,8 @@ const RETRYABLE_PATTERNS = [
   /too many requests/i,
   /timeout|timed out|etimedout/i,
   /econnreset|econnrefused|enotfound|eai_again|socket hang up/i,
-  /websocket|browserless|target closed|browser has been closed/i,
   /temporarily unavailable|could not be reached/i,
+  /backend_?error|internal error/i,
 ];
 
 export function classifyFailure(error: unknown): FailureClass {

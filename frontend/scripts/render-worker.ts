@@ -3,12 +3,16 @@
  * Parcel Atlas — production durable worker.
  *
  * Cycle:
- *   1. Crawl the bot mailbox over Browserless for CSV attachments from
- *      approved senders, validate them, store the CSV in private Blob and
- *      register an idempotent job in Neon.
+ *   1. Read the mailbox through the Gmail API, authorised by the encrypted
+ *      OAuth refresh token in Neon. Validate each CSV attachment, store it in
+ *      private Blob, and register an idempotent job.
  *   2. Claim exactly one job with a transactional lease.
  *   3. Match each address; generate and upload a report per exact match.
- *   4. Reply once with every completed report attached.
+ *   4. Send one threaded reply with every completed report attached.
+ *
+ * No browser is involved: there is no Browserless, Playwright, Gmail password
+ * or cookie in this path. A revoked grant stops the cycle as
+ * needs_reauthorization rather than retrying.
  *
  * Concurrency is one job per worker by design, to protect the Cotality rate
  * limit and the Gmail mailbox. Local files are never the source of truth.
@@ -44,8 +48,10 @@ import {
   uploadReportBlob,
 } from "../lib/blob-storage";
 import { CsvValidationError, buildIdempotencyKey, isAllowedSender, validateCsvAttachment } from "../lib/csv-intake";
-import { NeedsReauthenticationError, discoverCsvEmails, sendReportReply } from "../lib/gmail-worker";
-import { GmailSessionManager } from "../lib/gmail-session-manager";
+import type { GmailApiClient } from "../lib/gmail-api";
+import { discoverCsvAttachments, openMailbox, sendReportReply } from "../lib/gmail-mailbox";
+import { NeedsReauthorizationError } from "../lib/gmail-oauth";
+import { assertEncryptionKeyConfigured } from "../lib/token-crypto";
 import { createLogger } from "../lib/logger";
 import { generatePropertyReport, matchAddress } from "../lib/report-pipeline";
 import { classifyFailure } from "../lib/retry-policy";
@@ -93,8 +99,7 @@ const config = {
   mailboxMaxIntervalMs: Number(process.env.WORKER_MAILBOX_MAX_INTERVAL_MS || 900_000),
   leaseSeconds: Number(process.env.WORKER_LEASE_SECONDS || 900),
   maxEmails: Number(process.env.WORKER_MAX_EMAILS || 5),
-  gmailUsername: process.env.GMAIL_USERNAME || "",
-  gmailPassword: process.env.GMAIL_PASSWORD || "",
+
   allowedSenders: (process.env.GMAIL_ALLOWED_SENDERS || "")
     .split(",")
     .map((value) => value.trim().toLowerCase())
@@ -103,21 +108,20 @@ const config = {
   // replied to. Keep the default false so a missing environment variable does
   // not accidentally make a private mailbox public.
   allowAnySender: process.env.GMAIL_ALLOW_ANY_SENDER === "true",
-  browserless: {
-    wsEndpoint: process.env.BROWSERLESS_WS_ENDPOINT,
-    apiKey: process.env.BROWSERLESS_API_KEY,
-  },
 };
 
 const log = createLogger({ workerId: WORKER_ID, service: "parcel-atlas-worker" });
 
-/** One long-lived Browserless session shared by discovery and reply delivery. */
-const sessionManager = new GmailSessionManager({
-  ...config.browserless,
-  username: config.gmailUsername,
-  password: config.gmailPassword,
-  logger: log,
-});
+/**
+ * One Gmail API client per cycle, shared by discovery and reply delivery.
+ * The access token lives in memory only and is never persisted.
+ */
+let mailboxClient: GmailApiClient | null = null;
+
+async function getMailbox(): Promise<GmailApiClient> {
+  if (!mailboxClient) mailboxClient = await openMailbox({ logger: log });
+  return mailboxClient;
+}
 
 let shuttingDown = false;
 let cycles = 0;
@@ -165,15 +169,15 @@ async function discoverAndRegister(): Promise<number> {
     return 0;
   }
 
-  // Reuse the long-lived session instead of connecting per cycle.
-  const context = await sessionManager.acquire();
+  // Gmail API over OAuth: no browser, cookie or password in this path.
+  const mailbox = await getMailbox();
 
   let registered = 0;
   try {
-    const discovered = await discoverCsvEmails(context, { maxEmails: config.maxEmails, logger: log });
+    const discovered = await discoverCsvAttachments(mailbox, { maxMessages: config.maxEmails, logger: log });
 
     for (const item of discovered) {
-      const itemLog = log.child({ sender: item.sender, fileName: item.fileName });
+      const itemLog = log.child({ sender: item.sender, fileName: item.filename, messageId: item.messageId });
 
       if (!isAllowedSender(item.sender, config.allowedSenders, config.allowAnySender)) {
         itemLog.warn("intake.rejected", { reason: "sender is not on the allow-list" });
@@ -183,7 +187,7 @@ async function discoverAndRegister(): Promise<number> {
       let validated;
       try {
         validated = validateCsvAttachment({
-          fileName: item.fileName,
+          fileName: item.filename,
           content: item.csvContent,
           mimeType: item.mimeType,
         });
@@ -195,9 +199,12 @@ async function discoverAndRegister(): Promise<number> {
         continue;
       }
 
+      // Gmail message id participates in the key, so the same message can never
+      // create a second job across retries or later scheduled runs.
       const idempotencyKey = buildIdempotencyKey({
         sender: item.sender,
         threadId: item.threadId,
+        messageId: item.messageId,
         fileName: validated.fileName,
         csvContent: item.csvContent,
       });
@@ -217,6 +224,7 @@ async function discoverAndRegister(): Promise<number> {
         sender: item.sender,
         subject: item.subject,
         threadId: item.threadId,
+        messageId: item.messageId,
         attachment: {
           id: `csv-${Date.now()}-${randomBytes(4).toString("hex")}`,
           filename: validated.fileName,
@@ -245,12 +253,9 @@ async function discoverAndRegister(): Promise<number> {
       registered += 1;
     }
   } catch (error) {
-    // Drop the session only when it is the thing that broke, so a parsing or
-    // validation fault does not throw away a working browser.
-    const message = error instanceof Error ? error.message : String(error);
-    if (/target closed|browser has been closed|websocket|disconnected|session/i.test(message)) {
-      await sessionManager.invalidate(`discovery transport failure: ${message.slice(0, 120)}`);
-    }
+    // A revoked grant needs a human, so drop the cached client and let the
+    // caller stop the cycle rather than retrying.
+    if (error instanceof NeedsReauthorizationError) mailboxClient = null;
     throw error;
   }
 
@@ -273,16 +278,24 @@ function buildDeps(job: PipelineJob, blobSecret: string, jobLog: ReturnType<type
     readReport: (pathname) => downloadBlobText(pathname),
     updateRow: (input) => updatePropertyRow(input),
     sendReply: async (input) => {
-      // Reuse the same session the crawl used; a second connection per job was
-      // both wasteful and an extra bot signal.
-      const context = await sessionManager.acquire();
+      // One threaded Gmail API reply carrying every completed report.
+      const mailbox = await getMailbox();
       try {
-        await sendReportReply(context, { ...input, logger: jobLog });
+        await sendReportReply(mailbox, {
+          to: input.recipient,
+          subject: input.subject,
+          threadId: job.thread_id ?? undefined,
+          sourceMessageId: job.message_id ?? undefined,
+          attachments: input.attachments.map((attachment) => ({
+            filename: attachment.name,
+            mimeType: attachment.mimeType,
+            content: attachment.buffer,
+          })),
+          reviewCount: input.reviewCount,
+          logger: jobLog,
+        });
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (/target closed|browser has been closed|websocket|disconnected/i.test(message)) {
-          await sessionManager.invalidate(`reply transport failure: ${message.slice(0, 120)}`);
-        }
+        if (error instanceof NeedsReauthorizationError) mailboxClient = null;
         throw error;
       }
     },
@@ -410,7 +423,7 @@ async function processJob(job: PipelineJob): Promise<void> {
       error: error instanceof Error ? error.message : String(error),
     });
     await handleJobFailure(error, job.attempts, deps);
-    if (error instanceof NeedsReauthenticationError) throw error;
+    if (error instanceof NeedsReauthorizationError) throw error;
   }
 }
 
@@ -460,13 +473,13 @@ async function runCycle(): Promise<{ didWork: boolean }> {
       failure,
       error: error instanceof Error ? error.message : String(error),
     });
-    if (error instanceof NeedsReauthenticationError) throw error;
+    if (error instanceof NeedsReauthorizationError) throw error;
   }
 
   const claimed = await claimNextJob(WORKER_ID, config.leaseSeconds);
   if (!claimed) {
     await recordHeartbeat({ workerId: WORKER_ID, status: "idle", cycles, detail: "No claimable jobs" });
-    log.info("cycle.idle", { sessionOpen: sessionManager.isOpen, ...sessionManager.stats });
+    log.info("cycle.idle", { mailboxOpen: mailboxClient !== null });
     return { didWork };
   }
 
@@ -479,6 +492,9 @@ async function main(): Promise<void> {
   const once = process.argv.includes("--once");
   log.info("worker.start", { baseUrl: config.baseUrl, once, pollIntervalMs: config.pollIntervalMs });
 
+  // Fail fast: without the key the stored refresh token cannot be decrypted, so
+  // there is no point starting a cycle.
+  assertEncryptionKeyConfigured();
   await initSchema();
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
@@ -495,29 +511,29 @@ async function main(): Promise<void> {
       // Keep draining without pausing while there is a backlog.
       if (didWork) sleepMs = 1_000;
     } catch (error) {
-      if (error instanceof NeedsReauthenticationError) {
-        log.error("worker.paused_needs_reauthentication", { error: error.message });
-        // Back off hard and drop the session: retrying credentials would risk
-        // locking the account, and the held session is already untrusted.
-        await sessionManager.invalidate("needs reauthentication");
-        sleepMs = Math.max(config.pollIntervalMs, 900_000);
-      } else {
-        log.error("worker.cycle_error", { error: error instanceof Error ? error.message : String(error) });
+      if (error instanceof NeedsReauthorizationError) {
+        // A revoked grant cannot be recovered without human consent, so stop
+        // this run rather than looping. The status is already recorded in Neon.
+        log.error("worker.needs_reauthorization", {
+          error: error.message,
+          action: "Reconnect Gmail in Parcel Atlas to restore the grant.",
+        });
+        mailboxClient = null;
+        break;
       }
+      log.error("worker.cycle_error", { error: error instanceof Error ? error.message : String(error) });
     }
     if (once || shuttingDown) break;
     await new Promise((resolve) => setTimeout(resolve, sleepMs));
   } while (!shuttingDown);
 
-  await sessionManager.close();
   await recordHeartbeat({ workerId: WORKER_ID, status: "stopped", cycles, detail: "Worker exited" });
   await closePool();
-  log.info("worker.stopped", { cycles, sessionStats: sessionManager.stats });
+  log.info("worker.stopped", { cycles });
 }
 
 void main().catch(async (error: unknown) => {
   log.error("worker.fatal", { error: error instanceof Error ? error.message : String(error) });
-  await sessionManager.close().catch(() => undefined);
   await closePool();
   process.exit(1);
 });
