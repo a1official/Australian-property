@@ -114,14 +114,15 @@ Run the full workflow reliably in production:
 
 - [x] Run database migration against Neon. Idempotent; verified by re-running.
 - [x] Build and type-check the frontend. `tsc --noEmit` and `eslint` clean; `next build` succeeds.
-- [x] Automated test suite: 96 tests passing (`pnpm test`).
+- [x] Automated test suite: 119 tests passing (`pnpm test`).
 - [x] Durability verified against the real Neon database: 14/14 checks, including two
       concurrent claim attempts yielding exactly one winner.
 - [x] Private Blob store verified: 8/8 checks. `access=private`, anonymous fetch returns 403.
 - [x] Test an unmatched address, Cotality 429, Browserless session expiry and Gmail send failure.
       Covered in `tests/integration-flow.test.ts` with stubbed transports.
 - [x] Confirm a crash mid-run resumes only the outstanding reports and sends exactly one email.
-- [ ] Deploy the Vercel API/UI changes.
+- [x] Deploy the Vercel API/UI changes.
+      Verified production deployment is ready after commit `7c9dfa7`.
 - [ ] Enable/dispatch the GitHub Actions worker and confirm one scheduled run completes.
 - [ ] Confirm GitHub Actions secret names (without printing values).
 - [ ] Send a live test CSV from an allowed email with three exact-match addresses.
