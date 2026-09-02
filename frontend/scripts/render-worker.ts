@@ -44,7 +44,8 @@ import {
   uploadReportBlob,
 } from "../lib/blob-storage";
 import { CsvValidationError, buildIdempotencyKey, isAllowedSender, validateCsvAttachment } from "../lib/csv-intake";
-import { NeedsReauthenticationError, discoverCsvEmails, openGmailSession, sendReportReply } from "../lib/gmail-worker";
+import { NeedsReauthenticationError, discoverCsvEmails, sendReportReply } from "../lib/gmail-worker";
+import { GmailSessionManager } from "../lib/gmail-session-manager";
 import { createLogger } from "../lib/logger";
 import { generatePropertyReport, matchAddress } from "../lib/report-pipeline";
 import { classifyFailure } from "../lib/retry-policy";
@@ -84,7 +85,12 @@ loadLocalEnv();
 
 const config = {
   baseUrl: (process.env.PARCEL_ATLAS_BASE_URL || "https://australian-property.vercel.app").replace(/\/$/, ""),
-  pollIntervalMs: Number(process.env.WORKER_POLL_INTERVAL_MS || 60_000),
+  // How often the loop wakes. Cheap: a tick with no queued work and no due
+  // mailbox check performs a single indexed Postgres query.
+  pollIntervalMs: Number(process.env.WORKER_POLL_INTERVAL_MS || 30_000),
+  // How often Gmail may actually be opened, independent of the loop tick.
+  mailboxMinIntervalMs: Number(process.env.WORKER_MAILBOX_MIN_INTERVAL_MS || 120_000),
+  mailboxMaxIntervalMs: Number(process.env.WORKER_MAILBOX_MAX_INTERVAL_MS || 900_000),
   leaseSeconds: Number(process.env.WORKER_LEASE_SECONDS || 900),
   maxEmails: Number(process.env.WORKER_MAX_EMAILS || 5),
   gmailUsername: process.env.GMAIL_USERNAME || "",
@@ -101,8 +107,49 @@ const config = {
 
 const log = createLogger({ workerId: WORKER_ID, service: "parcel-atlas-worker" });
 
+/** One long-lived Browserless session shared by discovery and reply delivery. */
+const sessionManager = new GmailSessionManager({
+  ...config.browserless,
+  username: config.gmailUsername,
+  password: config.gmailPassword,
+  logger: log,
+});
+
 let shuttingDown = false;
 let cycles = 0;
+
+// ---------------------------------------------------------------------------
+// Adaptive mailbox scheduling
+// ---------------------------------------------------------------------------
+
+let nextMailboxCheckAt = 0;
+let quietChecks = 0;
+
+/**
+ * Backs the mailbox check off when the inbox is quiet.
+ *
+ * Checking every 60s regardless of activity is wasteful and, from a datacentre
+ * IP, is itself a bot signal. An empty inbox is the common case, so the interval
+ * grows to the configured ceiling and snaps back the moment mail arrives.
+ */
+function dueForMailboxCheck(): boolean {
+  return Date.now() >= nextMailboxCheckAt;
+}
+
+function recordMailboxCheck(foundMail: boolean): void {
+  if (foundMail) {
+    quietChecks = 0;
+    nextMailboxCheckAt = Date.now() + config.mailboxMinIntervalMs;
+    return;
+  }
+  quietChecks += 1;
+  const backoff = Math.min(
+    config.mailboxMinIntervalMs * 2 ** Math.min(quietChecks, 4),
+    config.mailboxMaxIntervalMs,
+  );
+  nextMailboxCheckAt = Date.now() + backoff;
+  log.debug("mailbox.backoff", { quietChecks, nextCheckInMs: backoff });
+}
 
 // ---------------------------------------------------------------------------
 // Stage 1 — inbox discovery
@@ -115,16 +162,12 @@ async function discoverAndRegister(): Promise<number> {
     return 0;
   }
 
-  const session = await openGmailSession({
-    ...config.browserless,
-    username: config.gmailUsername,
-    password: config.gmailPassword,
-    logger: log,
-  });
+  // Reuse the long-lived session instead of connecting per cycle.
+  const context = await sessionManager.acquire();
 
   let registered = 0;
   try {
-    const discovered = await discoverCsvEmails(session.context, { maxEmails: config.maxEmails, logger: log });
+    const discovered = await discoverCsvEmails(context, { maxEmails: config.maxEmails, logger: log });
 
     for (const item of discovered) {
       const itemLog = log.child({ sender: item.sender, fileName: item.fileName });
@@ -198,8 +241,14 @@ async function discoverAndRegister(): Promise<number> {
       itemLog.info("intake.registered", { jobId: job.id, rows: validated.addresses.length });
       registered += 1;
     }
-  } finally {
-    await session.close();
+  } catch (error) {
+    // Drop the session only when it is the thing that broke, so a parsing or
+    // validation fault does not throw away a working browser.
+    const message = error instanceof Error ? error.message : String(error);
+    if (/target closed|browser has been closed|websocket|disconnected|session/i.test(message)) {
+      await sessionManager.invalidate(`discovery transport failure: ${message.slice(0, 120)}`);
+    }
+    throw error;
   }
 
   return registered;
@@ -221,16 +270,17 @@ function buildDeps(job: PipelineJob, blobSecret: string, jobLog: ReturnType<type
     readReport: (pathname) => downloadBlobText(pathname),
     updateRow: (input) => updatePropertyRow(input),
     sendReply: async (input) => {
-      const session = await openGmailSession({
-        ...config.browserless,
-        username: config.gmailUsername,
-        password: config.gmailPassword,
-        logger: jobLog,
-      });
+      // Reuse the same session the crawl used; a second connection per job was
+      // both wasteful and an extra bot signal.
+      const context = await sessionManager.acquire();
       try {
-        await sendReportReply(session.context, { ...input, logger: jobLog });
-      } finally {
-        await session.close();
+        await sendReportReply(context, { ...input, logger: jobLog });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/target closed|browser has been closed|websocket|disconnected/i.test(message)) {
+          await sessionManager.invalidate(`reply transport failure: ${message.slice(0, 120)}`);
+        }
+        throw error;
       }
     },
     hasSentReply: () => hasSentReply(job.id),
@@ -365,31 +415,61 @@ async function processJob(job: PipelineJob): Promise<void> {
 // Main loop
 // ---------------------------------------------------------------------------
 
-async function runCycle(): Promise<void> {
+/**
+ * One cycle. Draining queued work is prioritised over checking the mailbox,
+ * because a job already in Neon needs no browser to make progress.
+ */
+async function runCycle(): Promise<{ didWork: boolean }> {
   cycles += 1;
-  await recordHeartbeat({ workerId: WORKER_ID, status: "crawling", cycles, detail: "Checking mailbox" });
+  let didWork = false;
 
+  // 1. Drain first. Matching, report generation and Blob writes are pure HTTP,
+  //    so a backlog clears without ever touching Gmail.
+  const queued = await claimNextJob(WORKER_ID, config.leaseSeconds);
+  if (queued) {
+    await recordHeartbeat({ workerId: WORKER_ID, status: "processing", currentJobId: queued.id, cycles, detail: "Processing queued job" });
+    await processJob(queued);
+    await recordHeartbeat({ workerId: WORKER_ID, status: "idle", cycles, detail: `Finished ${queued.id}` });
+    return { didWork: true };
+  }
+
+  // 2. Nothing queued, so check the mailbox. This is the only step that needs a
+  //    browser, and it is now the exception rather than every cycle.
+  if (!dueForMailboxCheck()) {
+    await recordHeartbeat({ workerId: WORKER_ID, status: "idle", cycles, detail: "Mailbox check not due" });
+    log.debug("cycle.skipped_mailbox", { nextCheckInMs: Math.max(0, nextMailboxCheckAt - Date.now()) });
+    return { didWork: false };
+  }
+
+  await recordHeartbeat({ workerId: WORKER_ID, status: "crawling", cycles, detail: "Checking mailbox" });
   try {
     const registered = await discoverAndRegister();
-    if (registered) log.info("cycle.registered", { registered });
+    recordMailboxCheck(registered > 0);
+    if (registered) {
+      log.info("cycle.registered", { registered });
+      didWork = true;
+    }
   } catch (error) {
     // A mailbox problem must not stop already-queued jobs from draining.
+    const failure = classifyFailure(error);
+    recordMailboxCheck(false);
     log.error("cycle.discovery_failed", {
-      failure: classifyFailure(error),
+      failure,
       error: error instanceof Error ? error.message : String(error),
     });
+    if (error instanceof NeedsReauthenticationError) throw error;
   }
 
-  // Exactly one job per cycle keeps concurrency at one by construction.
-  const job = await claimNextJob(WORKER_ID, config.leaseSeconds);
-  if (!job) {
+  const claimed = await claimNextJob(WORKER_ID, config.leaseSeconds);
+  if (!claimed) {
     await recordHeartbeat({ workerId: WORKER_ID, status: "idle", cycles, detail: "No claimable jobs" });
-    log.info("cycle.idle");
-    return;
+    log.info("cycle.idle", { sessionOpen: sessionManager.isOpen, ...sessionManager.stats });
+    return { didWork };
   }
 
-  await processJob(job);
-  await recordHeartbeat({ workerId: WORKER_ID, status: "idle", cycles, detail: `Finished ${job.id}` });
+  await processJob(claimed);
+  await recordHeartbeat({ workerId: WORKER_ID, status: "idle", cycles, detail: `Finished ${claimed.id}` });
+  return { didWork: true };
 }
 
 async function main(): Promise<void> {
@@ -406,28 +486,35 @@ async function main(): Promise<void> {
   }
 
   do {
+    let sleepMs = config.pollIntervalMs;
     try {
-      await runCycle();
+      const { didWork } = await runCycle();
+      // Keep draining without pausing while there is a backlog.
+      if (didWork) sleepMs = 1_000;
     } catch (error) {
       if (error instanceof NeedsReauthenticationError) {
         log.error("worker.paused_needs_reauthentication", { error: error.message });
-        // Back off hard: retrying credentials would risk locking the account.
-        await new Promise((resolve) => setTimeout(resolve, Math.max(config.pollIntervalMs, 300_000)));
+        // Back off hard and drop the session: retrying credentials would risk
+        // locking the account, and the held session is already untrusted.
+        await sessionManager.invalidate("needs reauthentication");
+        sleepMs = Math.max(config.pollIntervalMs, 900_000);
       } else {
         log.error("worker.cycle_error", { error: error instanceof Error ? error.message : String(error) });
       }
     }
     if (once || shuttingDown) break;
-    await new Promise((resolve) => setTimeout(resolve, config.pollIntervalMs));
+    await new Promise((resolve) => setTimeout(resolve, sleepMs));
   } while (!shuttingDown);
 
+  await sessionManager.close();
   await recordHeartbeat({ workerId: WORKER_ID, status: "stopped", cycles, detail: "Worker exited" });
   await closePool();
-  log.info("worker.stopped", { cycles });
+  log.info("worker.stopped", { cycles, sessionStats: sessionManager.stats });
 }
 
 void main().catch(async (error: unknown) => {
   log.error("worker.fatal", { error: error instanceof Error ? error.message : String(error) });
+  await sessionManager.close().catch(() => undefined);
   await closePool();
   process.exit(1);
 });
