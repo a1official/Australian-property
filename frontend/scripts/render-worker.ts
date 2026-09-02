@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Parcel Atlas — production background worker (Render).
+ * Parcel Atlas — production durable worker.
  *
  * Cycle:
  *   1. Crawl the bot mailbox over Browserless for CSV attachments from
@@ -67,7 +67,7 @@ import {
 const WORKER_ID = `${hostname()}-${process.pid}-${randomBytes(3).toString("hex")}`;
 const ROOT_DIR = nodePath.resolve(process.cwd(), "..");
 
-/** Local .env is a development convenience only; Render injects real secrets. */
+/** Local .env is a development convenience only; production injects real secrets. */
 function loadLocalEnv(): void {
   if (process.env.NODE_ENV === "production") return;
   for (const candidate of [nodePath.resolve(ROOT_DIR, ".env"), nodePath.resolve(process.cwd(), ".env")]) {

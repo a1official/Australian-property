@@ -1,0 +1,57 @@
+name: Gmail CSV report pipeline
+
+on:
+  schedule:
+    # Avoid minute 0, when GitHub's scheduled-workflow queue is busiest.
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Optional operator note for this one-off run"
+        required: false
+        type: string
+
+# One Gmail mailbox and one Cotality sandbox must never have concurrent workers.
+concurrency:
+  group: parcel-atlas-gmail-worker
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  process-mailbox:
+    name: Process one durable mailbox cycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      NODE_ENV: production
+      PARCEL_ATLAS_BASE_URL: https://australian-property.vercel.app
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+      BROWSERLESS_API_KEY: ${{ secrets.BROWSERLESS_API_KEY }}
+      BROWSERLESS_WS_ENDPOINT: ${{ secrets.BROWSERLESS_WS_ENDPOINT }}
+      GMAIL_USERNAME: ${{ secrets.GMAIL_USERNAME }}
+      GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+      GMAIL_ALLOWED_SENDERS: ${{ secrets.GMAIL_ALLOWED_SENDERS }}
+    steps:
+      - name: Check out the pinned main revision
+        uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # Finite by design: it processes one job, or checks the inbox once, then exits.
+      - name: Run one durable worker cycle
+        run: pnpm worker:scheduled

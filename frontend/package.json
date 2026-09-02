@@ -17,6 +17,7 @@
     "blob:cleanup": "tsx scripts/blob-cleanup.ts",
     "worker": "tsx scripts/render-worker.ts",
     "worker:once": "tsx scripts/render-worker.ts --once",
+    "worker:scheduled": "tsx scripts/render-worker.ts --once",
     "cotality:batch": "tsx scripts/cotality-batch-reports.ts",
     "gmail:auth": "tsx scripts/gmail-auth.ts",
     "gmail:auth:remote": "tsx scripts/gmail-auth-browserless.ts",

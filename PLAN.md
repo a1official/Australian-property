@@ -18,7 +18,7 @@ Run the full workflow reliably in production:
 | Vercel / Next.js | Website, Cotality API routes, job status and user interface | `australian-property.vercel.app` |
 | Neon Postgres | Durable job, property-level, and reply checkpoints | Neon hosted Postgres |
 | Vercel Blob (private) | Original CSV attachments and generated HTML reports | Private `parcel-atlas-reports` store |
-| Render background worker | Long-running mailbox polling, Cotality batch processing, retries and report delivery | Single worker instance |
+| GitHub Actions | Scheduled finite mailbox/job worker; manual dispatch for immediate processing | Every 15 minutes |
 | Browserless | Remote Playwright/Chrome session for the Gmail mailbox | Browserless WebSocket endpoint |
 | Gmail | Dedicated bot mailbox, CSV intake and report replies | Bot account only |
 
@@ -71,19 +71,18 @@ Run the full workflow reliably in production:
       `pnpm blob:cleanup` (dry run by default, `--commit` to delete); artifacts of
       non-terminal jobs are protected from deletion.
 
-### 3. Render worker
+### 3. Scheduled GitHub Actions worker
 
-- [x] Add a production worker entry point that continuously polls Neon for the next leased job.
+- [x] Add a production worker entry point that processes one leased job or one mailbox check, then exits.
 - [x] Move the current Browserless Gmail crawl and reply logic into that worker process.
       `frontend/lib/gmail-worker.ts`; session state lives in Neon, not `.local`.
 - [x] Ensure the worker uses a single concurrency slot to protect Cotality rate limits and the Gmail mailbox.
       One `claimNextJob` per cycle; `numInstances: 1`.
 - [x] Add structured logs and a health/status heartbeat in Neon.
       JSON logs with secret redaction; `worker_heartbeats` + `/api/worker/health`.
-- [x] Add `render.yaml`.
-- [ ] Create the Render background-worker service. **Awaiting cost approval — background
-      workers have no free tier.**
-- [ ] Configure only server-side worker secrets on Render (blocked by the item above).
+- [x] Add a scheduled GitHub Actions workflow plus a manual-dispatch option.
+- [ ] Add the required GitHub repository secrets, especially `GMAIL_ALLOWED_SENDERS`.
+- [ ] Authenticate the dedicated Gmail mailbox in Browserless and save the session in Neon.
 
 ### 4. Vercel job UI and API
 
@@ -123,8 +122,8 @@ Run the full workflow reliably in production:
       Covered in `tests/integration-flow.test.ts` with stubbed transports.
 - [x] Confirm a crash mid-run resumes only the outstanding reports and sends exactly one email.
 - [ ] Deploy the Vercel API/UI changes.
-- [ ] Deploy the worker to Render and confirm it has one running instance. **Blocked on cost approval.**
-- [ ] Confirm Vercel and Render environment-variable names (without printing values).
+- [ ] Enable/dispatch the GitHub Actions worker and confirm one scheduled run completes.
+- [ ] Confirm GitHub Actions secret names (without printing values).
 - [ ] Send a live test CSV from an allowed email with three exact-match addresses.
 - [ ] Confirm three reports in Blob, rows in Neon, and one Gmail reply with all three attached.
 - [ ] Restart the worker mid-test against the live mailbox and confirm no duplicates.
@@ -133,7 +132,7 @@ Run the full workflow reliably in production:
 ## Architecture notes
 
 **Reports no longer require a browser.** `cotality-batch-reports.ts` drove the batch UI with
-a local Chromium, which cannot work on Render's Node runtime. The report builder was extracted
+a local Chromium, which cannot work on an ephemeral worker runtime. The report builder was extracted
 to `frontend/lib/report-html.ts` (isomorphic, no DOM or `node:` imports) and the worker calls
 it over HTTPS through `frontend/lib/report-pipeline.ts`. Images embed as data URIs, so a
 stored report renders offline as an email attachment.
