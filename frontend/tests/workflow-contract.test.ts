@@ -47,6 +47,7 @@ test("secrets are referenced, never inlined", () => {
     "BLOB_READ_WRITE_TOKEN",
     "GMAIL_CLIENT_ID",
     "GMAIL_CLIENT_SECRET",
+    "GMAIL_REDIRECT_URI",
     "GMAIL_TOKEN_ENCRYPTION_KEY",
   ]) {
     const pattern = new RegExp(`${key}:\\s*\\$\\{\\{\\s*secrets\\.${key}\\s*\\}\\}`);
