@@ -38,6 +38,8 @@ export type WorkerDeps = {
     recipient: string;
     subject: string;
     attachments: Array<{ name: string; mimeType: string; buffer: Buffer }>;
+    /** Optional name from this report's CSV row, used only for the salutation. */
+    ownerName?: string | null;
     /** Rows left for manual review, so the reply can say so honestly. */
     reviewCount: number;
   }): Promise<void>;
@@ -169,7 +171,7 @@ export async function deliverReply(
     }
     const attachment = { name: row.report_filename || `parcel-atlas-${row.property_id}.html`, mimeType: "text/html", buffer: Buffer.from(await deps.readReport(row.blob_pathname as string), "utf8") };
     try {
-      await deps.sendReply({ recipient: job.sender, subject: buildReplySubject(job.subject, 1), attachments: [attachment], reviewCount: reviewRows(rows).length });
+      await deps.sendReply({ recipient: job.sender, subject: buildReplySubject(job.subject, 1), attachments: [attachment], ownerName: row.owner_name, reviewCount: reviewRows(rows).length });
       await deps.recordReply({ propertyReportId: row.id, reportCount: 1, status: "sent" });
       sentCount += 1;
     } catch (error) {
@@ -225,7 +227,7 @@ export async function handleJobFailure(
 export async function loadJobAddresses(
   attachment: { filename: string; blob_pathname: string | null },
   deps: WorkerDeps,
-): Promise<Array<{ rowNumber: number; address: string }>> {
+): Promise<Array<{ rowNumber: number; address: string; ownerName: string | null }>> {
   if (!attachment.blob_pathname) {
     throw Object.assign(new Error("CSV attachment has no Blob pathname; cannot process job."), { permanent: true });
   }

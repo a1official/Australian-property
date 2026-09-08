@@ -131,6 +131,11 @@ test("the plain-text body is never empty and states the report count", () => {
   assert.ok(!body.includes("undefined"));
 });
 
+test("an owner name personalises the email salutation and is HTML-escaped", () => {
+  assert.match(replyPlainTextBody(1, 0, "Alice Example"), /^Hello Alice Example,/);
+  assert.match(replyHtmlBody(1, 0, ["a.html"], "Alice <Example>"), /Hello Alice &lt;Example&gt;,/);
+});
+
 test("review rows are disclosed in both bodies", () => {
   assert.match(replyPlainTextBody(2, 1), /manual review/);
   assert.match(replyHtmlBody(2, 1, ["a.html"]), /manual review/);

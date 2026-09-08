@@ -45,7 +45,7 @@ type Harness = {
     matched: string[];
     generated: number[];
     uploaded: string[];
-    replies: Array<{ recipient: string; attachments: string[] }>;
+    replies: Array<{ recipient: string; attachments: string[]; ownerName?: string | null }>;
     recorded: Array<{ propertyReportId: string; status: string; reportCount: number }>;
     transitions: string[];
     gmailHandled: number;
@@ -97,7 +97,7 @@ function harness(options: {
     },
     sendReply: async (input) => {
       if (options.sendReply) await options.sendReply();
-      calls.replies.push({ recipient: input.recipient, attachments: input.attachments.map((a) => a.name) });
+      calls.replies.push({ recipient: input.recipient, attachments: input.attachments.map((a) => a.name), ownerName: input.ownerName });
     },
     hasSentReply: async (propertyReportId) => sentReportIds.has("all") || sentReportIds.has(propertyReportId),
     recordReply: async (input) => {
@@ -240,6 +240,13 @@ test("deliverReply sends one email for every completed report", async () => {
     ["parcel-atlas-3.html"],
   ]);
   assert.equal(h.calls.gmailHandled, 1, "source message marked handled after send");
+});
+
+test("deliverReply passes a report row's owner name to its individual email", async () => {
+  const h = harness();
+  const report = row({ row_number: 2, status: "generated", owner_name: "Alice Example", blob_pathname: "p/a.html", report_filename: "a.html" });
+  await deliverReply({ jobId: "job-1", sender: "agent@example.com", subject: "Rent review", blobSecret: "s" }, [report], h.deps);
+  assert.equal(h.calls.replies[0]?.ownerName, "Alice Example");
 });
 
 test("deliverReply does not resend reports already delivered", async () => {

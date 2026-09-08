@@ -154,7 +154,7 @@ export async function discoverCsvAttachments(
 }
 
 /**
- * Sends exactly one threaded reply carrying every completed report, then marks
+ * Sends one threaded reply for a completed report, then marks
  * the source message handled only after Gmail confirms the send.
  */
 export async function sendReportReply(
@@ -166,6 +166,7 @@ export async function sendReportReply(
     sourceMessageId?: string;
     rfc822MessageId?: string;
     attachments: ReplyAttachment[];
+    ownerName?: string | null;
     reviewCount?: number;
     logger: Logger;
   },
@@ -179,8 +180,8 @@ export async function sendReportReply(
     subject: buildReplySubject(params.subject),
     inReplyTo: params.rfc822MessageId,
     references: params.rfc822MessageId,
-    plainText: replyPlainTextBody(params.attachments.length, reviewCount),
-    html: replyHtmlBody(params.attachments.length, reviewCount, params.attachments.map((item) => item.filename)),
+    plainText: replyPlainTextBody(params.attachments.length, reviewCount, params.ownerName),
+    html: replyHtmlBody(params.attachments.length, reviewCount, params.attachments.map((item) => item.filename), params.ownerName),
     attachments: params.attachments,
   });
 

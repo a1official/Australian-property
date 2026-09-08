@@ -145,6 +145,7 @@ export interface PropertyReportRecord {
   job_id: string;
   row_number: number;
   original_address: string;
+  owner_name: string | null;
   normalized_address: string | null;
   property_id: string | null;
   status: PropertyReportStatus;
@@ -208,6 +209,7 @@ const SCHEMA_STATEMENTS = [
     job_id TEXT NOT NULL REFERENCES pipeline_jobs(id) ON DELETE CASCADE,
     row_number INT NOT NULL,
     original_address TEXT NOT NULL,
+    owner_name TEXT,
     normalized_address TEXT,
     property_id BIGINT,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -351,6 +353,7 @@ const MIGRATION_STATEMENTS = [
   `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS report_filename TEXT`,
   `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS blob_pathname TEXT`,
   `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+  `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS owner_name TEXT`,
   `ALTER TABLE property_reports DROP COLUMN IF EXISTS html_blob_url`,
   `ALTER TABLE reply_attempts DROP COLUMN IF EXISTS sender`,
   `ALTER TABLE reply_attempts ADD COLUMN IF NOT EXISTS property_report_id TEXT`,
@@ -557,16 +560,17 @@ export async function getCsvAttachment(jobId: string): Promise<CsvAttachmentReco
 /** Seeds one row per CSV address. Safe to call again after a crash. */
 export async function seedPropertyRows(
   jobId: string,
-  rows: Array<{ id: string; rowNumber: number; address: string }>,
+  rows: Array<{ id: string; rowNumber: number; address: string; ownerName?: string | null }>,
 ): Promise<void> {
   if (!rows.length) return;
   await withTransaction(async (client) => {
     for (const row of rows) {
       await client.query(
-        `INSERT INTO property_reports (id, job_id, row_number, original_address, status)
-         VALUES ($1, $2, $3, $4, 'pending')
-         ON CONFLICT (job_id, row_number) DO NOTHING`,
-        [row.id, jobId, row.rowNumber, row.address],
+        `INSERT INTO property_reports (id, job_id, row_number, original_address, owner_name, status)
+         VALUES ($1, $2, $3, $4, $5, 'pending')
+         ON CONFLICT (job_id, row_number) DO UPDATE
+           SET owner_name = COALESCE(property_reports.owner_name, EXCLUDED.owner_name)`,
+        [row.id, jobId, row.rowNumber, row.address, row.ownerName ?? null],
       );
     }
   });

@@ -247,6 +247,7 @@ async function discoverAndRegister(): Promise<number> {
           id: `prop-${job.id}-${address.rowNumber}`,
           rowNumber: address.rowNumber,
           address: address.address,
+          ownerName: address.ownerName,
         })),
       );
       itemLog.info("intake.registered", { jobId: job.id, rows: validated.addresses.length });
@@ -292,6 +293,7 @@ function buildDeps(job: PipelineJob, blobSecret: string, jobLog: ReturnType<type
             content: attachment.buffer,
           })),
           reviewCount: input.reviewCount,
+          ownerName: input.ownerName,
           logger: jobLog,
         });
       } catch (error) {
@@ -346,10 +348,11 @@ async function processJob(job: PipelineJob): Promise<void> {
     const addresses = await loadJobAddresses(attachment, deps);
     await seedPropertyRows(
       job.id,
-      addresses.map((address) => ({
-        id: `prop-${job.id}-${address.rowNumber}`,
-        rowNumber: address.rowNumber,
-        address: address.address,
+        addresses.map((address) => ({
+          id: `prop-${job.id}-${address.rowNumber}`,
+          rowNumber: address.rowNumber,
+          address: address.address,
+          ownerName: address.ownerName,
       })),
     );
     await transitionJob({ jobId: job.id, status: "downloaded", workerId: WORKER_ID, detail: `${addresses.length} address row(s)` });

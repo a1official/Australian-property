@@ -8,9 +8,11 @@
 import { createHash } from "node:crypto";
 
 export const ADDRESS_HEADERS = ["address", "property address", "full address"];
+export const OWNER_NAME_HEADERS = ["owner name", "owners name", "owner_name", "owners_name"];
 export const MAX_CSV_BYTES = 1_000_000;
 export const MAX_ADDRESS_ROWS = 10;
 export const MAX_ADDRESS_LENGTH = 300;
+export const MAX_OWNER_NAME_LENGTH = 160;
 export const ALLOWED_CSV_MIME_TYPES = ["text/csv", "application/csv", "text/plain", "application/vnd.ms-excel"];
 
 /** Permanent validation problems must never be retried by the worker. */
@@ -93,7 +95,7 @@ export function isAllowedSender(sender: string, allowedSenders: string[], allowA
 
 export type ValidatedCsv = {
   fileName: string;
-  addresses: Array<{ rowNumber: number; address: string }>;
+  addresses: Array<{ rowNumber: number; address: string; ownerName: string | null }>;
   contentHash: string;
   byteLength: number;
 };
@@ -127,13 +129,14 @@ export function validateCsvAttachment(input: {
 
   const headers = (rows[0] ?? []).map((header) => header.trim().toLowerCase());
   const addressColumn = headers.findIndex((header) => ADDRESS_HEADERS.includes(header));
+  const ownerNameColumn = headers.findIndex((header) => OWNER_NAME_HEADERS.includes(header));
   if (addressColumn < 0) {
     throw new CsvValidationError(
       `CSV requires one of these columns: ${ADDRESS_HEADERS.join(", ")}. Found: ${headers.join(", ") || "(no header row)"}`,
     );
   }
 
-  const addresses: Array<{ rowNumber: number; address: string }> = [];
+  const addresses: Array<{ rowNumber: number; address: string; ownerName: string | null }> = [];
   const seen = new Set<string>();
   rows.slice(1).forEach((row, index) => {
     const address = (row[addressColumn] ?? "").trim();
@@ -144,7 +147,11 @@ export function validateCsvAttachment(input: {
     const key = address.toLowerCase().replace(/\s+/g, " ");
     if (seen.has(key)) return;
     seen.add(key);
-    addresses.push({ rowNumber: index + 2, address });
+    const ownerName = ownerNameColumn < 0 ? "" : (row[ownerNameColumn] ?? "").replace(/[\r\n\t]+/g, " ").trim();
+    if (ownerName.length > MAX_OWNER_NAME_LENGTH) {
+      throw new CsvValidationError(`Row ${index + 2} owner name exceeds ${MAX_OWNER_NAME_LENGTH} characters.`);
+    }
+    addresses.push({ rowNumber: index + 2, address, ownerName: ownerName || null });
   });
 
   if (!addresses.length) throw new CsvValidationError("CSV does not contain any property addresses.");

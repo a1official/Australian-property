@@ -168,10 +168,15 @@ export function buildReplySubject(subject: string): string {
   return `Re: ${base}`;
 }
 
-export function replyPlainTextBody(reportCount: number, reviewCount: number): string {
+function greeting(ownerName?: string | null): string {
+  const normalized = ownerName?.replace(/[\r\n\t]+/g, " ").trim();
+  return normalized ? `Hello ${normalized},` : "Hi,";
+}
+
+export function replyPlainTextBody(reportCount: number, reviewCount: number, ownerName?: string | null): string {
   const plural = reportCount === 1 ? "" : "s";
   const lines = [
-    "Hi,",
+    greeting(ownerName),
     "",
     `Attached ${reportCount === 1 ? "is" : "are"} your Parcel Atlas rent review report${plural} for the ${reportCount} propert${reportCount === 1 ? "y" : "ies"} matched from your CSV.`,
     "",
@@ -187,7 +192,7 @@ export function replyPlainTextBody(reportCount: number, reviewCount: number): st
   return lines.join("\n");
 }
 
-export function replyHtmlBody(reportCount: number, reviewCount: number, reportNames: string[]): string {
+export function replyHtmlBody(reportCount: number, reviewCount: number, reportNames: string[], ownerName?: string | null): string {
   const escape = (value: string) =>
     value.replace(/[&<>"']/g, (character) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character] ?? character);
@@ -198,7 +203,7 @@ export function replyHtmlBody(reportCount: number, reviewCount: number, reportNa
       : "";
   return [
     '<div style="font-family:Arial,sans-serif;font-size:14px;color:#172022;line-height:1.5;">',
-    "<p>Hi,</p>",
+    `<p>${escape(greeting(ownerName))}</p>`,
     `<p>Attached ${reportCount === 1 ? "is" : "are"} your Parcel Atlas rent review report${reportCount === 1 ? "" : "s"} for the <strong>${reportCount}</strong> propert${reportCount === 1 ? "y" : "ies"} matched from your CSV.</p>`,
     "<p>Each report contains the matched property attributes, qualifying comparable rentals, and the calculated average weekly rent based on Cotality/CoreLogic evidence.</p>",
     items ? `<ul>${items}</ul>` : "",
