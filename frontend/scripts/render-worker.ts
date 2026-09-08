@@ -43,6 +43,7 @@ import {
 } from "../lib/db";
 import {
   createJobBlobSecret,
+  downloadBlobBuffer,
   downloadBlobText,
   uploadCsvBlob,
   uploadReportBlob,
@@ -53,7 +54,7 @@ import { discoverCsvAttachments, openMailbox, sendReportReply } from "../lib/gma
 import { NeedsReauthorizationError } from "../lib/gmail-oauth";
 import { assertEncryptionKeyConfigured } from "../lib/token-crypto";
 import { createLogger } from "../lib/logger";
-import { generatePropertyReport, matchAddress } from "../lib/report-pipeline";
+import { generatePropertyPdf, matchAddress } from "../lib/report-pipeline";
 import { classifyFailure } from "../lib/retry-policy";
 import {
   deliverReply,
@@ -273,10 +274,10 @@ function buildDeps(job: PipelineJob, blobSecret: string, jobLog: ReturnType<type
     logger: jobLog,
     readCsv: (pathname) => downloadBlobText(pathname),
     matchAddress: (address) => matchAddress(address, clientOptions),
-    generateReport: (input) => generatePropertyReport(input, clientOptions),
+    generateReport: (input) => generatePropertyPdf(input, clientOptions),
     uploadReport: async (input) =>
-      uploadReportBlob({ jobId: job.id, secret: blobSecret, filename: input.filename, html: input.html }),
-    readReport: (pathname) => downloadBlobText(pathname),
+      uploadReportBlob({ jobId: job.id, secret: blobSecret, filename: input.filename, content: input.content }),
+    readReport: (pathname) => downloadBlobBuffer(pathname),
     updateRow: (input) => updatePropertyRow(input),
     sendReply: async (input) => {
       // One threaded Gmail API reply carrying every completed report.

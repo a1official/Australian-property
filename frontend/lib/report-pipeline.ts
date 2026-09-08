@@ -7,6 +7,7 @@
  */
 
 import { buildReportHtml, comparableAddress, reportFilenameFor, record } from "./report-html";
+import { buildReportPdf } from "./report-pdf";
 
 const MAX_EMBEDDED_IMAGES = 13;
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
@@ -184,4 +185,30 @@ export async function generatePropertyReport(
   });
 
   return { filename: reportFilenameFor(params.propertyId), html };
+}
+
+/** Fetches the same Cotality evidence as the HTML report, then renders a PDF attachment. */
+export async function generatePropertyPdf(
+  params: { propertyId: number; address: string },
+  options: PipelineClientOptions,
+): Promise<{ filename: string; content: Buffer }> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const timeoutMs = options.timeoutMs ?? 120_000;
+  const base = options.baseUrl.replace(/\/$/, "");
+
+  const profile = await requestJson<unknown>(`${base}/api/corelogic/properties/${params.propertyId}`, {
+    fetchImpl,
+    timeoutMs,
+  });
+  const comparables = await requestJson<unknown>(
+    `${base}/api/corelogic/properties/${params.propertyId}/comparables`,
+    { fetchImpl, timeoutMs },
+  );
+
+  return buildReportPdf({
+    address: params.address,
+    profile,
+    comparables,
+    embedImages: createNodeImageEmbedder(options),
+  });
 }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { UpstreamError, generatePropertyReport, matchAddress } from "../lib/report-pipeline";
+import { UpstreamError, generatePropertyPdf, generatePropertyReport, matchAddress } from "../lib/report-pipeline";
 
 const BASE = "https://example.test";
 
@@ -140,4 +140,20 @@ test("image failures never fail the report", async () => {
     },
   );
   assert.match(result.html, /Image unavailable/);
+});
+
+test("generatePropertyPdf produces a real PDF named from the property address and date", async () => {
+  const result = await generatePropertyPdf(
+    { propertyId: 4242, address: "1 Test Street SYDNEY NSW 2000" },
+    {
+      baseUrl: BASE,
+      fetchImpl: stubFetch((url) => {
+        if (url.includes("/comparables")) return { status: 200, body: { reference: {}, candidates: [] } };
+        if (url.includes("/api/corelogic/properties/4242")) return { status: 200, body: { propertyId: 4242, modules: { core: { data: { propertyType: "HOUSE" } } } } };
+        return undefined;
+      }),
+    },
+  );
+  assert.match(result.filename, /^1-test-street-sydney-nsw-2000-\d{4}-\d{2}-\d{2}\.pdf$/);
+  assert.equal(result.content.subarray(0, 4).toString("utf8"), "%PDF");
 });

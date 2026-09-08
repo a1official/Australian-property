@@ -91,13 +91,18 @@ export async function uploadReportBlob(params: {
   jobId: string;
   secret: string;
   filename: string;
-  html: string | Buffer;
+  /** `html` is retained for the legacy/manual HTML-report path. */
+  html?: string | Buffer;
+  content?: string | Buffer;
 }): Promise<{ pathname: string; url: string }> {
   const token = getBlobToken();
   const pathname = reportPathname(params.jobId, params.secret, params.filename);
-  const blob = await put(pathname, params.html, {
+  const content = params.content ?? params.html;
+  if (content === undefined) throw new Error("Report content is required.");
+  const isPdf = params.filename.toLowerCase().endsWith(".pdf");
+  const blob = await put(pathname, content, {
     access: "private",
-    contentType: "text/html; charset=utf-8",
+    contentType: isPdf ? "application/pdf" : "text/html; charset=utf-8",
     addRandomSuffix: false,
     allowOverwrite: true,
     token,
@@ -107,6 +112,11 @@ export async function uploadReportBlob(params: {
 
 /** Downloads one report at reply time. Only completed reports are fetched. */
 export async function downloadBlobText(pathname: string): Promise<string> {
+  return (await downloadBlobBuffer(pathname)).toString("utf8");
+}
+
+/** Downloads a report or CSV without assuming it is UTF-8 text. */
+export async function downloadBlobBuffer(pathname: string): Promise<Buffer> {
   const token = getBlobToken();
   const result = await get(pathname, { access: "private", token });
   if (!result?.stream) throw new Error(`Blob ${pathname} returned no content.`);
@@ -118,7 +128,7 @@ export async function downloadBlobText(pathname: string): Promise<string> {
     if (done) break;
     if (value) chunks.push(Buffer.from(value));
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }
 
 export async function blobExists(pathname: string): Promise<boolean> {

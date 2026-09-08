@@ -56,7 +56,7 @@ type Harness = {
 
 function harness(options: {
   match?: (address: string) => Promise<MatchResult>;
-  generate?: (input: { propertyId: number; address: string }) => Promise<{ filename: string; html: string }>;
+  generate?: (input: { propertyId: number; address: string }) => Promise<{ filename: string; content: Buffer }>;
   sendReply?: () => Promise<void>;
   replyAlreadySent?: boolean;
 } = {}): Harness {
@@ -85,13 +85,13 @@ function harness(options: {
     generateReport: async (input) => {
       calls.generated.push(input.propertyId);
       if (options.generate) return options.generate(input);
-      return { filename: `parcel-atlas-${input.propertyId}.html`, html: "<html>report</html>" };
+      return { filename: `property-${input.propertyId}.pdf`, content: Buffer.from("%PDF-test") };
     },
     uploadReport: async (input) => {
       calls.uploaded.push(input.filename);
       return { pathname: `parcel-atlas/reports/job-1-secret/${input.filename}` };
     },
-    readReport: async (pathname) => `<html>${pathname}</html>`,
+    readReport: async (pathname) => Buffer.from(`%PDF-${pathname}`),
     updateRow: async (input) => {
       rowState.set(input.id, { ...rowState.get(input.id), ...(input as Partial<PropertyReportRecord>) });
     },
@@ -225,9 +225,9 @@ test("reply is due only when nothing is pending and something was generated", ()
 test("deliverReply sends one email for every completed report", async () => {
   const h = harness();
   const rows = [
-    row({ row_number: 2, status: "generated", blob_pathname: "p/a.html", report_filename: "parcel-atlas-1.html" }),
-    row({ row_number: 3, status: "generated", blob_pathname: "p/b.html", report_filename: "parcel-atlas-2.html" }),
-    row({ row_number: 4, status: "generated", blob_pathname: "p/c.html", report_filename: "parcel-atlas-3.html" }),
+    row({ row_number: 2, status: "generated", blob_pathname: "p/a.pdf", report_filename: "property-1.pdf" }),
+    row({ row_number: 3, status: "generated", blob_pathname: "p/b.pdf", report_filename: "property-2.pdf" }),
+    row({ row_number: 4, status: "generated", blob_pathname: "p/c.pdf", report_filename: "property-3.pdf" }),
   ];
   const result = await deliverReply({ jobId: "job-1", sender: "agent@example.com", subject: "Rent review", blobSecret: "s" }, rows, h.deps);
 
@@ -235,16 +235,16 @@ test("deliverReply sends one email for every completed report", async () => {
   assert.equal(result.sentCount, 3);
   assert.equal(h.calls.replies.length, 3, "one email per report");
   assert.deepEqual(h.calls.replies.map((reply) => reply.attachments), [
-    ["parcel-atlas-1.html"],
-    ["parcel-atlas-2.html"],
-    ["parcel-atlas-3.html"],
+    ["property-1.pdf"],
+    ["property-2.pdf"],
+    ["property-3.pdf"],
   ]);
   assert.equal(h.calls.gmailHandled, 1, "source message marked handled after send");
 });
 
 test("deliverReply passes a report row's owner name to its individual email", async () => {
   const h = harness();
-  const report = row({ row_number: 2, status: "generated", owner_name: "Alice Example", blob_pathname: "p/a.html", report_filename: "a.html" });
+  const report = row({ row_number: 2, status: "generated", owner_name: "Alice Example", blob_pathname: "p/a.pdf", report_filename: "a.pdf" });
   await deliverReply({ jobId: "job-1", sender: "agent@example.com", subject: "Rent review", blobSecret: "s" }, [report], h.deps);
   assert.equal(h.calls.replies[0]?.ownerName, "Alice Example");
 });

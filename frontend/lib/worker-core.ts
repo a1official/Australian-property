@@ -30,9 +30,9 @@ export type WorkerDeps = {
     | { kind: "needs_review"; reason: string }
     | { kind: "unmatched"; reason: string }
   >;
-  generateReport(input: { propertyId: number; address: string }): Promise<{ filename: string; html: string }>;
-  uploadReport(input: { filename: string; html: string }): Promise<{ pathname: string }>;
-  readReport(pathname: string): Promise<string>;
+  generateReport(input: { propertyId: number; address: string }): Promise<{ filename: string; content: Buffer }>;
+  uploadReport(input: { filename: string; content: Buffer }): Promise<{ pathname: string }>;
+  readReport(pathname: string): Promise<Buffer>;
   updateRow(input: Parameters<typeof import("./db").updatePropertyRow>[0]): Promise<void>;
   sendReply(input: {
     recipient: string;
@@ -169,7 +169,7 @@ export async function deliverReply(
       deps.logger.info("reply.already_sent", { propertyReportId: row.id });
       continue;
     }
-    const attachment = { name: row.report_filename || `parcel-atlas-${row.property_id}.html`, mimeType: "text/html", buffer: Buffer.from(await deps.readReport(row.blob_pathname as string), "utf8") };
+    const attachment = { name: row.report_filename || `property-report.pdf`, mimeType: "application/pdf", buffer: await deps.readReport(row.blob_pathname as string) };
     try {
       await deps.sendReply({ recipient: job.sender, subject: buildReplySubject(job.subject, 1), attachments: [attachment], ownerName: row.owner_name, reviewCount: reviewRows(rows).length });
       await deps.recordReply({ propertyReportId: row.id, reportCount: 1, status: "sent" });
