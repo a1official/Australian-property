@@ -24,8 +24,8 @@ test("parseCsv handles quoted commas, escaped quotes and CRLF", () => {
 test("validateCsvAttachment extracts addresses with 1-based row numbers", () => {
   const result = validateCsvAttachment({ fileName: "batch.csv", content: validCsv, mimeType: "text/csv" });
   assert.equal(result.addresses.length, 2);
-  assert.deepEqual(result.addresses[0], { rowNumber: 2, address: "1 Test Street SYDNEY NSW 2000", ownerName: null });
-  assert.deepEqual(result.addresses[1], { rowNumber: 3, address: "2 Sample Road PARRAMATTA NSW 2150", ownerName: null });
+  assert.deepEqual(result.addresses[0], { rowNumber: 2, address: "1 Test Street SYDNEY NSW 2000", ownerName: null, currentRent: null });
+  assert.deepEqual(result.addresses[1], { rowNumber: 3, address: "2 Sample Road PARRAMATTA NSW 2150", ownerName: null, currentRent: null });
 });
 
 test("validateCsvAttachment carries an optional owner name for each address row", () => {
@@ -43,6 +43,14 @@ test("validateCsvAttachment accepts the plural owners name header", () => {
     content: "address,Owners Name\n1 Test Street SYDNEY NSW 2000,Alice Example\n",
   });
   assert.equal(result.addresses[0]?.ownerName, "Alice Example");
+});
+
+test("validateCsvAttachment reads a current weekly rent from a formatted CSV value", () => {
+  const result = validateCsvAttachment({
+    fileName: "batch.csv",
+    content: "address,current rent\n1 Test Street SYDNEY NSW 2000,$850/week\n",
+  });
+  assert.equal(result.addresses[0]?.currentRent, 850);
 });
 
 test("validateCsvAttachment accepts alternate address headers and a BOM", () => {

@@ -167,6 +167,7 @@ export async function sendReportReply(
     rfc822MessageId?: string;
     attachments: ReplyAttachment[];
     ownerName?: string | null;
+    rentReview?: import("./gmail-api").RentReviewEmailContext;
     reviewCount?: number;
     logger: Logger;
   },
@@ -180,8 +181,8 @@ export async function sendReportReply(
     subject: buildReplySubject(params.subject),
     inReplyTo: params.rfc822MessageId,
     references: params.rfc822MessageId,
-    plainText: replyPlainTextBody(params.attachments.length, reviewCount, params.ownerName),
-    html: replyHtmlBody(params.attachments.length, reviewCount, params.attachments.map((item) => item.filename), params.ownerName),
+    plainText: replyPlainTextBody(params.attachments.length, reviewCount, params.ownerName, params.rentReview),
+    html: replyHtmlBody(params.attachments.length, reviewCount, params.attachments.map((item) => item.filename), params.ownerName, params.rentReview),
     attachments: params.attachments,
   });
 

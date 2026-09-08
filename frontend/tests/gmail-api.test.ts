@@ -136,6 +136,14 @@ test("an owner name personalises the email salutation and is HTML-escaped", () =
   assert.match(replyHtmlBody(1, 0, ["a.html"], "Alice <Example>"), /Hello Alice &lt;Example&gt;,/);
 });
 
+test("rent review email uses the two-percent market band and changes its recommendation", () => {
+  const context = { address: "14 Charles Street Baulkham Hills NSW 2153", bedrooms: 4, marketRentLow: 780, marketRentHigh: 900, marketRentAverage: 850 };
+  assert.match(replyPlainTextBody(1, 0, "Ankush", { ...context, currentRent: 850 }), /keep the rent at the same amount/i);
+  assert.match(replyPlainTextBody(1, 0, "Ankush", { ...context, currentRent: 800 }), /consider increasing/i);
+  assert.match(replyPlainTextBody(1, 0, "Ankush", { ...context, currentRent: 900 }), /not to increase/i);
+  assert.match(replyPlainTextBody(1, 0, "Ankush", { ...context, currentRent: 850 }), /60 days written notice/i);
+});
+
 test("review rows are disclosed in both bodies", () => {
   assert.match(replyPlainTextBody(2, 1), /manual review/);
   assert.match(replyHtmlBody(2, 1, ["a.html"]), /manual review/);

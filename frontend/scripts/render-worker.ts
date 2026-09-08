@@ -249,6 +249,7 @@ async function discoverAndRegister(): Promise<number> {
           rowNumber: address.rowNumber,
           address: address.address,
           ownerName: address.ownerName,
+          currentRent: address.currentRent,
         })),
       );
       itemLog.info("intake.registered", { jobId: job.id, rows: validated.addresses.length });
@@ -295,6 +296,14 @@ function buildDeps(job: PipelineJob, blobSecret: string, jobLog: ReturnType<type
           })),
           reviewCount: input.reviewCount,
           ownerName: input.ownerName,
+          rentReview: {
+            address: input.address ?? "",
+            currentRent: input.currentRent,
+            bedrooms: input.bedrooms,
+            marketRentLow: input.marketRentLow,
+            marketRentHigh: input.marketRentHigh,
+            marketRentAverage: input.marketRentAverage,
+          },
           logger: jobLog,
         });
       } catch (error) {

@@ -173,7 +173,47 @@ function greeting(ownerName?: string | null): string {
   return normalized ? `Hello ${normalized},` : "Hi,";
 }
 
-export function replyPlainTextBody(reportCount: number, reviewCount: number, ownerName?: string | null): string {
+export type RentReviewEmailContext = {
+  address: string;
+  currentRent?: number | null;
+  bedrooms?: number | null;
+  marketRentLow?: number | null;
+  marketRentHigh?: number | null;
+  marketRentAverage?: number | null;
+};
+
+function rentReviewLines(ownerName: string | null | undefined, context: RentReviewEmailContext): string[] | null {
+  const current = Number(context.currentRent);
+  const average = Number(context.marketRentAverage);
+  if (!Number.isFinite(current) || current <= 0 || !Number.isFinite(average) || average <= 0) return null;
+  const money = (amount: number) => new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD", maximumFractionDigits: 0 }).format(amount);
+  const low = Number(context.marketRentLow);
+  const high = Number(context.marketRentHigh);
+  const range = Number.isFinite(low) && Number.isFinite(high) ? `${money(low)} and ${money(high)}` : `around ${money(average)}`;
+  const bedroomText = Number.isFinite(Number(context.bedrooms)) ? `${context.bedrooms}-bedroom properties` : "Comparable properties";
+  const aroundMarket = Math.abs(current - average) / average <= 0.02;
+  const notice = /\bNSW\b/i.test(context.address)
+    ? " NSW rent increases are generally limited to once every 12 months and require at least 60 days written notice, subject to the tenancy agreement and applicable law."
+    : " Any rent change should be checked against the tenancy agreement and applicable state or territory requirements.";
+  const suggestion = aroundMarket
+    ? [`Your tenant is paying ${money(current)}/week, which is around the estimated market rent for your property.`, `It is suggested to keep the rent at the same amount for now.${notice}`]
+    : current < average
+      ? [`Your tenant is paying ${money(current)}/week, which is below the estimated market rent of ${money(average)}/week.`, `It is suggested to consider increasing the rent toward ${money(average)}/week.${notice}`]
+      : [`Your tenant is paying ${money(current)}/week, which is above the estimated market rent of ${money(average)}/week.`, "It is suggested not to increase the rent at this time and to review the rent again at the next appropriate review point."];
+  return [
+    greeting(ownerName), "", "Hope you are well.", "",
+    `I would like to provide you with the rent review for ${context.address}.`, "",
+    "Current rental market status",
+    `${bedroomText} in the surrounding area are leased and advertised between ${range} per week, depending on condition.`,
+    `Based on the attached rent review, the achievable rent for your property is estimated at ${money(average)}/week.`, "",
+    "Suggestion", ...suggestion, "", "Please find the detailed rent review attached.", "",
+    "Should you have any further enquiries, please do not hesitate to contact me.", "", "Kind regards,", "Murdoch Lee",
+  ];
+}
+
+export function replyPlainTextBody(reportCount: number, reviewCount: number, ownerName?: string | null, context?: RentReviewEmailContext): string {
+  const rentReview = context ? rentReviewLines(ownerName, context) : null;
+  if (rentReview) return rentReview.join("\n");
   const plural = reportCount === 1 ? "" : "s";
   const lines = [
     greeting(ownerName),
@@ -192,7 +232,7 @@ export function replyPlainTextBody(reportCount: number, reviewCount: number, own
   return lines.join("\n");
 }
 
-export function replyHtmlBody(reportCount: number, reviewCount: number, reportNames: string[], ownerName?: string | null): string {
+export function replyHtmlBody(reportCount: number, reviewCount: number, reportNames: string[], ownerName?: string | null, context?: RentReviewEmailContext): string {
   const escape = (value: string) =>
     value.replace(/[&<>"']/g, (character) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character] ?? character);
@@ -201,6 +241,10 @@ export function replyHtmlBody(reportCount: number, reviewCount: number, reportNa
     reviewCount > 0
       ? `<p style="color:#5f4a18;background:#fff0c7;border-left:4px solid #d69c1d;padding:10px 12px;">${reviewCount} address${reviewCount === 1 ? "" : "es"} could not be matched to a single property and ${reviewCount === 1 ? "was" : "were"} left for manual review.</p>`
       : "";
+  const rentReview = context ? rentReviewLines(ownerName, context) : null;
+  if (rentReview) {
+    return ["<div style='font-family:Arial,sans-serif;font-size:14px;color:#172022;line-height:1.55;max-width:680px;'>", ...rentReview.map((line) => line ? `<p>${escape(line)}</p>` : ""), "</div>"].join("");
+  }
   return [
     '<div style="font-family:Arial,sans-serif;font-size:14px;color:#172022;line-height:1.5;">',
     `<p>${escape(greeting(ownerName))}</p>`,

@@ -9,6 +9,7 @@ import { createHash } from "node:crypto";
 
 export const ADDRESS_HEADERS = ["address", "property address", "full address"];
 export const OWNER_NAME_HEADERS = ["owner name", "owners name", "owner_name", "owners_name"];
+export const CURRENT_RENT_HEADERS = ["current rent", "current weekly rent", "weekly rent", "current_rent", "current_weekly_rent"];
 export const MAX_CSV_BYTES = 1_000_000;
 export const MAX_ADDRESS_ROWS = 10;
 export const MAX_ADDRESS_LENGTH = 300;
@@ -95,7 +96,7 @@ export function isAllowedSender(sender: string, allowedSenders: string[], allowA
 
 export type ValidatedCsv = {
   fileName: string;
-  addresses: Array<{ rowNumber: number; address: string; ownerName: string | null }>;
+  addresses: Array<{ rowNumber: number; address: string; ownerName: string | null; currentRent: number | null }>;
   contentHash: string;
   byteLength: number;
 };
@@ -130,13 +131,14 @@ export function validateCsvAttachment(input: {
   const headers = (rows[0] ?? []).map((header) => header.trim().toLowerCase());
   const addressColumn = headers.findIndex((header) => ADDRESS_HEADERS.includes(header));
   const ownerNameColumn = headers.findIndex((header) => OWNER_NAME_HEADERS.includes(header));
+  const currentRentColumn = headers.findIndex((header) => CURRENT_RENT_HEADERS.includes(header));
   if (addressColumn < 0) {
     throw new CsvValidationError(
       `CSV requires one of these columns: ${ADDRESS_HEADERS.join(", ")}. Found: ${headers.join(", ") || "(no header row)"}`,
     );
   }
 
-  const addresses: Array<{ rowNumber: number; address: string; ownerName: string | null }> = [];
+  const addresses: Array<{ rowNumber: number; address: string; ownerName: string | null; currentRent: number | null }> = [];
   const seen = new Set<string>();
   rows.slice(1).forEach((row, index) => {
     const address = (row[addressColumn] ?? "").trim();
@@ -151,7 +153,12 @@ export function validateCsvAttachment(input: {
     if (ownerName.length > MAX_OWNER_NAME_LENGTH) {
       throw new CsvValidationError(`Row ${index + 2} owner name exceeds ${MAX_OWNER_NAME_LENGTH} characters.`);
     }
-    addresses.push({ rowNumber: index + 2, address, ownerName: ownerName || null });
+    const rentCell = currentRentColumn < 0 ? "" : (row[currentRentColumn] ?? "").trim();
+    const parsedRent = Number(rentCell.replace(/[^0-9.]/g, ""));
+    if (rentCell && (!Number.isFinite(parsedRent) || parsedRent <= 0 || parsedRent > 25_000)) {
+      throw new CsvValidationError(`Row ${index + 2} current rent is not a valid weekly amount.`);
+    }
+    addresses.push({ rowNumber: index + 2, address, ownerName: ownerName || null, currentRent: rentCell ? parsedRent : null });
   });
 
   if (!addresses.length) throw new CsvValidationError("CSV does not contain any property addresses.");

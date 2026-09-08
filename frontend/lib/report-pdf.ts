@@ -19,6 +19,13 @@ const BRAND_ORANGE = "#EF7C2F";
 const INK = "#272B35";
 const MUTED = "#687080";
 
+export type RentReviewEmailData = {
+  bedrooms: number | null;
+  marketRentLow: number | null;
+  marketRentHigh: number | null;
+  marketRentAverage: number | null;
+};
+
 function value(input: unknown): string {
   return input === null || input === undefined || input === "" ? "Not available" : String(input);
 }
@@ -183,7 +190,7 @@ export async function buildReportPdf(input: {
   comparables: unknown;
   embedImages?: ImageEmbedder;
   now?: Date;
-}): Promise<{ filename: string; content: Buffer }> {
+}): Promise<{ filename: string; content: Buffer; emailData: RentReviewEmailData }> {
   const now = input.now ?? new Date();
   const property = record(input.profile);
   const modules = record(property.modules);
@@ -213,6 +220,13 @@ export async function buildReportPdf(input: {
   const salePrice = formatMoney(findValue(lastSale, ["price", "salePrice", "saleAmount", "amount"]));
   const saleDate = findValue(lastSale, ["date", "saleDate", "contractDate", "settlementDate"]);
   const average = averageWeeklyRentOf(selected);
+  const comparableRents = selected.map((candidate) => Number(candidate.weeklyRent)).filter(Number.isFinite);
+  const emailData: RentReviewEmailData = {
+    bedrooms: Number.isFinite(Number(core.beds)) ? Number(core.beds) : null,
+    marketRentLow: comparableRents.length ? Math.min(...comparableRents) : null,
+    marketRentHigh: comparableRents.length ? Math.max(...comparableRents) : null,
+    marketRentAverage: average,
+  };
   const reference = record(record(input.comparables).reference);
 
   document.addPage();
@@ -271,5 +285,5 @@ export async function buildReportPdf(input: {
   document.fillColor("#475464").font("Helvetica").fontSize(7.1).text(`${distanceText}\n\nComparable inclusion: score 60/100 or higher, confirmed weekly rent, and rent-quality validation. Score weights: type 35 - bedrooms 20 - bathrooms 15 - car spaces 10 - floor/land area 10 - locality or distance 10.`, PAGE_MARGIN + 12, noteY + 23, { width: CONTENT_WIDTH - 24, lineGap: 2 });
   document.y = noteY + 84;
   document.end();
-  return { filename: reportPdfFilenameFor(input.address, now), content: await completed };
+  return { filename: reportPdfFilenameFor(input.address, now), content: await completed, emailData };
 }

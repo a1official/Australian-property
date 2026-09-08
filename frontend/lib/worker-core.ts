@@ -30,7 +30,11 @@ export type WorkerDeps = {
     | { kind: "needs_review"; reason: string }
     | { kind: "unmatched"; reason: string }
   >;
-  generateReport(input: { propertyId: number; address: string }): Promise<{ filename: string; content: Buffer }>;
+  generateReport(input: { propertyId: number; address: string }): Promise<{
+    filename: string;
+    content: Buffer;
+    emailData?: { bedrooms: number | null; marketRentLow: number | null; marketRentHigh: number | null; marketRentAverage: number | null };
+  }>;
   uploadReport(input: { filename: string; content: Buffer }): Promise<{ pathname: string }>;
   readReport(pathname: string): Promise<Buffer>;
   updateRow(input: Parameters<typeof import("./db").updatePropertyRow>[0]): Promise<void>;
@@ -40,6 +44,12 @@ export type WorkerDeps = {
     attachments: Array<{ name: string; mimeType: string; buffer: Buffer }>;
     /** Optional name from this report's CSV row, used only for the salutation. */
     ownerName?: string | null;
+    address?: string;
+    currentRent?: number | null;
+    bedrooms?: number | null;
+    marketRentLow?: number | null;
+    marketRentHigh?: number | null;
+    marketRentAverage?: number | null;
     /** Rows left for manual review, so the reply can say so honestly. */
     reviewCount: number;
   }): Promise<void>;
@@ -124,6 +134,10 @@ export async function processRows(
         status: "generated",
         reportFilename: report.filename,
         blobPathname: stored.pathname,
+        bedrooms: report.emailData?.bedrooms ?? null,
+        marketRentLow: report.emailData?.marketRentLow ?? null,
+        marketRentHigh: report.emailData?.marketRentHigh ?? null,
+        marketRentAverage: report.emailData?.marketRentAverage ?? null,
         error: null,
         incrementAttempts: true,
       });
@@ -171,7 +185,19 @@ export async function deliverReply(
     }
     const attachment = { name: row.report_filename || `property-report.pdf`, mimeType: "application/pdf", buffer: await deps.readReport(row.blob_pathname as string) };
     try {
-      await deps.sendReply({ recipient: job.sender, subject: buildReplySubject(job.subject, 1), attachments: [attachment], ownerName: row.owner_name, reviewCount: reviewRows(rows).length });
+      await deps.sendReply({
+        recipient: job.sender,
+        subject: buildReplySubject(job.subject, 1),
+        attachments: [attachment],
+        ownerName: row.owner_name,
+        address: row.normalized_address || row.original_address,
+        currentRent: row.current_rent === null ? null : Number(row.current_rent),
+        bedrooms: row.bedrooms,
+        marketRentLow: row.market_rent_low === null ? null : Number(row.market_rent_low),
+        marketRentHigh: row.market_rent_high === null ? null : Number(row.market_rent_high),
+        marketRentAverage: row.market_rent_average === null ? null : Number(row.market_rent_average),
+        reviewCount: reviewRows(rows).length,
+      });
       await deps.recordReply({ propertyReportId: row.id, reportCount: 1, status: "sent" });
       sentCount += 1;
     } catch (error) {

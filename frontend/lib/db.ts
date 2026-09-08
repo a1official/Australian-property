@@ -146,6 +146,11 @@ export interface PropertyReportRecord {
   row_number: number;
   original_address: string;
   owner_name: string | null;
+  current_rent: string | null;
+  bedrooms: number | null;
+  market_rent_low: string | null;
+  market_rent_high: string | null;
+  market_rent_average: string | null;
   normalized_address: string | null;
   property_id: string | null;
   status: PropertyReportStatus;
@@ -210,6 +215,11 @@ const SCHEMA_STATEMENTS = [
     row_number INT NOT NULL,
     original_address TEXT NOT NULL,
     owner_name TEXT,
+    current_rent NUMERIC,
+    bedrooms INT,
+    market_rent_low NUMERIC,
+    market_rent_high NUMERIC,
+    market_rent_average NUMERIC,
     normalized_address TEXT,
     property_id BIGINT,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -354,6 +364,11 @@ const MIGRATION_STATEMENTS = [
   `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS blob_pathname TEXT`,
   `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
   `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS owner_name TEXT`,
+  `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS current_rent NUMERIC`,
+  `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS bedrooms INT`,
+  `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS market_rent_low NUMERIC`,
+  `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS market_rent_high NUMERIC`,
+  `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS market_rent_average NUMERIC`,
   `ALTER TABLE property_reports DROP COLUMN IF EXISTS html_blob_url`,
   `ALTER TABLE reply_attempts DROP COLUMN IF EXISTS sender`,
   `ALTER TABLE reply_attempts ADD COLUMN IF NOT EXISTS property_report_id TEXT`,
@@ -560,17 +575,18 @@ export async function getCsvAttachment(jobId: string): Promise<CsvAttachmentReco
 /** Seeds one row per CSV address. Safe to call again after a crash. */
 export async function seedPropertyRows(
   jobId: string,
-  rows: Array<{ id: string; rowNumber: number; address: string; ownerName?: string | null }>,
+  rows: Array<{ id: string; rowNumber: number; address: string; ownerName?: string | null; currentRent?: number | null }>,
 ): Promise<void> {
   if (!rows.length) return;
   await withTransaction(async (client) => {
     for (const row of rows) {
       await client.query(
-        `INSERT INTO property_reports (id, job_id, row_number, original_address, owner_name, status)
-         VALUES ($1, $2, $3, $4, $5, 'pending')
+        `INSERT INTO property_reports (id, job_id, row_number, original_address, owner_name, current_rent, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'pending')
          ON CONFLICT (job_id, row_number) DO UPDATE
-           SET owner_name = COALESCE(property_reports.owner_name, EXCLUDED.owner_name)`,
-        [row.id, jobId, row.rowNumber, row.address, row.ownerName ?? null],
+           SET owner_name = COALESCE(property_reports.owner_name, EXCLUDED.owner_name),
+               current_rent = COALESCE(property_reports.current_rent, EXCLUDED.current_rent)`,
+        [row.id, jobId, row.rowNumber, row.address, row.ownerName ?? null, row.currentRent ?? null],
       );
     }
   });
@@ -591,6 +607,10 @@ export async function updatePropertyRow(params: {
   propertyId?: number | null;
   score?: number | null;
   weeklyRent?: number | null;
+  bedrooms?: number | null;
+  marketRentLow?: number | null;
+  marketRentHigh?: number | null;
+  marketRentAverage?: number | null;
   reportFilename?: string | null;
   blobPathname?: string | null;
   error?: string | null;
@@ -603,10 +623,14 @@ export async function updatePropertyRow(params: {
             property_id = COALESCE($4, property_id),
             score = COALESCE($5, score),
             weekly_rent = COALESCE($6, weekly_rent),
-            report_filename = COALESCE($7, report_filename),
-            blob_pathname = COALESCE($8, blob_pathname),
-            error = $9,
-            attempts = attempts + CASE WHEN $10 THEN 1 ELSE 0 END,
+            bedrooms = COALESCE($7, bedrooms),
+            market_rent_low = COALESCE($8, market_rent_low),
+            market_rent_high = COALESCE($9, market_rent_high),
+            market_rent_average = COALESCE($10, market_rent_average),
+            report_filename = COALESCE($11, report_filename),
+            blob_pathname = COALESCE($12, blob_pathname),
+            error = $13,
+            attempts = attempts + CASE WHEN $14 THEN 1 ELSE 0 END,
             updated_at = NOW()
       WHERE id = $1`,
     [
@@ -616,6 +640,10 @@ export async function updatePropertyRow(params: {
       params.propertyId ?? null,
       params.score ?? null,
       params.weeklyRent ?? null,
+      params.bedrooms ?? null,
+      params.marketRentLow ?? null,
+      params.marketRentHigh ?? null,
+      params.marketRentAverage ?? null,
       params.reportFilename ?? null,
       params.blobPathname ?? null,
       params.error ?? null,

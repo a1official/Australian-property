@@ -191,7 +191,11 @@ export async function generatePropertyReport(
 export async function generatePropertyPdf(
   params: { propertyId: number; address: string },
   options: PipelineClientOptions,
-): Promise<{ filename: string; content: Buffer }> {
+): Promise<{
+  filename: string;
+  content: Buffer;
+  emailData: { bedrooms: number | null; marketRentLow: number | null; marketRentHigh: number | null; marketRentAverage: number | null };
+}> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? 120_000;
   const base = options.baseUrl.replace(/\/$/, "");
