@@ -2,8 +2,8 @@ name: Gmail CSV report pipeline
 
 on:
   schedule:
-    # Avoid minute 0, when GitHub's scheduled-workflow queue is busiest.
-    - cron: "7,22,37,52 * * * *"
+    # GitHub Actions' shortest supported scheduled interval: every five minutes.
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       reason:
