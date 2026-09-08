@@ -5,7 +5,7 @@
  * Resume rules enforced here:
  *  - a report is generated only for a row that is not already `generated`;
  *  - a reply is sent only when every exact match has a stored report;
- *  - a reply is sent at most once per job, checked before and recorded after;
+ *  - every generated report is emailed independently, with a sent marker per report;
  *  - the Gmail message is marked handled only after the reply is confirmed.
  */
 
@@ -41,8 +41,8 @@ export type WorkerDeps = {
     /** Rows left for manual review, so the reply can say so honestly. */
     reviewCount: number;
   }): Promise<void>;
-  hasSentReply(): Promise<boolean>;
-  recordReply(input: { reportCount: number; status: "sent" | "failed"; error?: string | null }): Promise<void>;
+  hasSentReply(propertyReportId: string): Promise<boolean>;
+  recordReply(input: { propertyReportId: string; reportCount: number; status: "sent" | "failed"; error?: string | null }): Promise<void>;
   markGmailHandled(): Promise<void>;
   transition(input: { status: import("./db").JobStatus; detail?: string | null; error?: string | null; nextRunAt?: Date | null; releaseLease?: boolean }): Promise<void>;
   heartbeat(detail: string): Promise<void>;
@@ -148,51 +148,38 @@ export async function processRows(
 }
 
 /**
- * Sends the single reply for a job, attaching every generated report.
- * Downloads only the completed reports it needs, from Blob.
+ * Sends one email per generated property report. A sent marker is stored for
+ * each report, so a retry resumes at the first unsent email.
  */
 export async function deliverReply(
   job: JobArtifacts,
   rows: PropertyReportRecord[],
   deps: WorkerDeps,
-): Promise<{ sent: boolean; reason?: string }> {
+): Promise<{ sent: boolean; sentCount: number; reason?: string }> {
   const completed = generatedRows(rows);
-  if (!completed.length) return { sent: false, reason: "no completed reports" };
-  if (pendingRows(rows).length) return { sent: false, reason: "reports still pending" };
+  if (!completed.length) return { sent: false, sentCount: 0, reason: "no completed reports" };
+  if (pendingRows(rows).length) return { sent: false, sentCount: 0, reason: "reports still pending" };
+  await deps.transition({ status: "replying", detail: `Emailing ${completed.length} individual report(s)` });
 
-  // Duplicate-email guard: never send twice for the same job.
-  if (await deps.hasSentReply()) {
-    deps.logger.info("reply.already_sent");
-    return { sent: false, reason: "reply already sent" };
+  let sentCount = 0;
+  for (const row of completed) {
+    if (await deps.hasSentReply(row.id)) {
+      deps.logger.info("reply.already_sent", { propertyReportId: row.id });
+      continue;
+    }
+    const attachment = { name: row.report_filename || `parcel-atlas-${row.property_id}.html`, mimeType: "text/html", buffer: Buffer.from(await deps.readReport(row.blob_pathname as string), "utf8") };
+    try {
+      await deps.sendReply({ recipient: job.sender, subject: buildReplySubject(job.subject, 1), attachments: [attachment], reviewCount: reviewRows(rows).length });
+      await deps.recordReply({ propertyReportId: row.id, reportCount: 1, status: "sent" });
+      sentCount += 1;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await deps.recordReply({ propertyReportId: row.id, reportCount: 1, status: "failed", error: message });
+      throw error;
+    }
   }
-
-  await deps.transition({ status: "replying", detail: `Attaching ${completed.length} report(s)` });
-
-  const attachments = await Promise.all(
-    completed.map(async (row) => ({
-      name: row.report_filename || `parcel-atlas-${row.property_id}.html`,
-      mimeType: "text/html",
-      buffer: Buffer.from(await deps.readReport(row.blob_pathname as string), "utf8"),
-    })),
-  );
-
-  try {
-    await deps.sendReply({
-      recipient: job.sender,
-      subject: buildReplySubject(job.subject, attachments.length),
-      attachments,
-      reviewCount: reviewRows(rows).length,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await deps.recordReply({ reportCount: attachments.length, status: "failed", error: message });
-    throw error;
-  }
-
-  await deps.recordReply({ reportCount: attachments.length, status: "sent" });
-  // Only now is the source email considered handled.
   await deps.markGmailHandled();
-  return { sent: true };
+  return { sent: sentCount > 0, sentCount, reason: sentCount ? undefined : "all report emails were already sent" };
 }
 
 /** Maps a job-level failure onto the correct terminal or retry state. */

@@ -299,12 +299,13 @@ function buildDeps(job: PipelineJob, blobSecret: string, jobLog: ReturnType<type
         throw error;
       }
     },
-    hasSentReply: () => hasSentReply(job.id),
+    hasSentReply: (propertyReportId) => hasSentReply(job.id, propertyReportId),
     recordReply: (input) =>
       recordReplyAttempt({
         id: `reply-${Date.now()}-${randomBytes(3).toString("hex")}`,
         jobId: job.id,
         recipient: job.sender,
+        propertyReportId: input.propertyReportId,
         reportCount: input.reportCount,
         status: input.status,
         error: input.error ?? null,
@@ -403,7 +404,7 @@ async function processJob(job: PipelineJob): Promise<void> {
         jobId: job.id,
         status: "completed",
         workerId: WORKER_ID,
-        detail: review ? `Reply sent; ${review} row(s) still need review.` : "Reply sent with all reports attached.",
+        detail: review ? `${reply.sentCount} report email(s) sent; ${review} row(s) still need review.` : `${reply.sentCount} individual report email(s) sent.`,
         releaseLease: true,
       });
       jobLog.info("job.completed", { reports: rows.filter((row) => row.status === "generated").length });

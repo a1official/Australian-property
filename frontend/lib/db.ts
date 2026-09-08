@@ -223,6 +223,7 @@ const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS reply_attempts (
     id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES pipeline_jobs(id) ON DELETE CASCADE,
+    property_report_id TEXT,
     recipient TEXT NOT NULL,
     report_count INT NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'pending',
@@ -282,9 +283,11 @@ const INDEX_STATEMENTS = [
      ON property_reports(job_id, property_id) WHERE property_id IS NOT NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_property_reports_job_row
      ON property_reports(job_id, row_number)`,
-  // At most one confirmed reply per job: the duplicate-email guard.
-  `CREATE UNIQUE INDEX IF NOT EXISTS idx_reply_attempts_one_sent
-     ON reply_attempts(job_id) WHERE status = 'sent'`,
+  // At most one confirmed delivery per generated report: retries resume at
+  // the first unsent report and cannot resend an earlier property email.
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_reply_attempts_report_sent
+     ON reply_attempts(job_id, property_report_id)
+     WHERE status = 'sent' AND property_report_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS idx_pipeline_jobs_claimable ON pipeline_jobs(status, next_run_at)`,
   `CREATE INDEX IF NOT EXISTS idx_job_events_job ON job_events(job_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_property_reports_job ON property_reports(job_id, row_number)`,
@@ -321,10 +324,12 @@ const DEDUPE_STATEMENTS = [
       SET status = 'failed',
           error = COALESCE(error, 'Superseded duplicate reply record retained for audit.')
     WHERE r.status = 'sent'
+      AND r.property_report_id IS NULL
       AND EXISTS (
         SELECT 1 FROM reply_attempts other
          WHERE other.job_id = r.job_id
            AND other.status = 'sent'
+           AND other.property_report_id IS NULL
            AND (other.sent_at, other.id) < (r.sent_at, r.id)
       )`,
 ];
@@ -348,6 +353,8 @@ const MIGRATION_STATEMENTS = [
   `ALTER TABLE property_reports ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
   `ALTER TABLE property_reports DROP COLUMN IF EXISTS html_blob_url`,
   `ALTER TABLE reply_attempts DROP COLUMN IF EXISTS sender`,
+  `ALTER TABLE reply_attempts ADD COLUMN IF NOT EXISTS property_report_id TEXT`,
+  `DROP INDEX IF EXISTS idx_reply_attempts_one_sent`,
   `UPDATE pipeline_jobs SET status = 'queued' WHERE status = 'discovered'`,
   `UPDATE pipeline_jobs SET status = 'running' WHERE status = 'processing'`,
   `UPDATE pipeline_jobs SET status = 'completed' WHERE status = 'reply_sent'`,
@@ -617,10 +624,12 @@ export async function updatePropertyRow(params: {
 // Replies
 // ---------------------------------------------------------------------------
 
-export async function hasSentReply(jobId: string): Promise<boolean> {
+export async function hasSentReply(jobId: string, propertyReportId?: string): Promise<boolean> {
   const { rows } = await getPool().query<{ count: string }>(
-    "SELECT COUNT(*)::text AS count FROM reply_attempts WHERE job_id = $1 AND status = 'sent'",
-    [jobId],
+    propertyReportId
+      ? "SELECT COUNT(*)::text AS count FROM reply_attempts WHERE job_id = $1 AND property_report_id = $2 AND status = 'sent'"
+      : "SELECT COUNT(*)::text AS count FROM reply_attempts WHERE job_id = $1 AND status = 'sent'",
+    propertyReportId ? [jobId, propertyReportId] : [jobId],
   );
   return Number(rows[0]?.count ?? 0) > 0;
 }
@@ -634,14 +643,15 @@ export async function recordReplyAttempt(params: {
   id: string;
   jobId: string;
   recipient: string;
+  propertyReportId?: string | null;
   reportCount: number;
   status: "sent" | "failed";
   error?: string | null;
 }): Promise<void> {
   await getPool().query(
-    `INSERT INTO reply_attempts (id, job_id, recipient, report_count, status, error, sent_at)
-     VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $5 = 'sent' THEN NOW() ELSE NULL END)`,
-    [params.id, params.jobId, params.recipient, params.reportCount, params.status, params.error ?? null],
+    `INSERT INTO reply_attempts (id, job_id, recipient, property_report_id, report_count, status, error, sent_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $6 = 'sent' THEN NOW() ELSE NULL END)`,
+    [params.id, params.jobId, params.recipient, params.propertyReportId ?? null, params.reportCount, params.status, params.error ?? null],
   );
 }
 

@@ -46,12 +46,12 @@ type Harness = {
     generated: number[];
     uploaded: string[];
     replies: Array<{ recipient: string; attachments: string[] }>;
-    recorded: Array<{ status: string; reportCount: number }>;
+    recorded: Array<{ propertyReportId: string; status: string; reportCount: number }>;
     transitions: string[];
     gmailHandled: number;
   };
   rowState: Map<string, Partial<PropertyReportRecord>>;
-  replyAlreadySent: { value: boolean };
+  sentReportIds: Set<string>;
 };
 
 function harness(options: {
@@ -70,7 +70,8 @@ function harness(options: {
     gmailHandled: 0,
   };
   const rowState = new Map<string, Partial<PropertyReportRecord>>();
-  const replyAlreadySent = { value: options.replyAlreadySent ?? false };
+  const sentReportIds = new Set<string>();
+  if (options.replyAlreadySent) sentReportIds.add("all");
 
   const deps: WorkerDeps = {
     logger: silentLogger,
@@ -98,10 +99,10 @@ function harness(options: {
       if (options.sendReply) await options.sendReply();
       calls.replies.push({ recipient: input.recipient, attachments: input.attachments.map((a) => a.name) });
     },
-    hasSentReply: async () => replyAlreadySent.value,
+    hasSentReply: async (propertyReportId) => sentReportIds.has("all") || sentReportIds.has(propertyReportId),
     recordReply: async (input) => {
-      calls.recorded.push({ status: input.status, reportCount: input.reportCount });
-      if (input.status === "sent") replyAlreadySent.value = true;
+      calls.recorded.push({ propertyReportId: input.propertyReportId, status: input.status, reportCount: input.reportCount });
+      if (input.status === "sent") sentReportIds.add(input.propertyReportId);
     },
     markGmailHandled: async () => {
       calls.gmailHandled += 1;
@@ -112,7 +113,7 @@ function harness(options: {
     heartbeat: async () => {},
   };
 
-  return { deps, calls, rowState, replyAlreadySent };
+  return { deps, calls, rowState, sentReportIds };
 }
 
 test("row partitioning distinguishes pending, generated and review rows", () => {
@@ -221,7 +222,7 @@ test("reply is due only when nothing is pending and something was generated", ()
   assert.equal(replyIsDue([row({ row_number: 2, status: "needs_review" })]), false);
 });
 
-test("deliverReply attaches every completed report", async () => {
+test("deliverReply sends one email for every completed report", async () => {
   const h = harness();
   const rows = [
     row({ row_number: 2, status: "generated", blob_pathname: "p/a.html", report_filename: "parcel-atlas-1.html" }),
@@ -231,16 +232,17 @@ test("deliverReply attaches every completed report", async () => {
   const result = await deliverReply({ jobId: "job-1", sender: "agent@example.com", subject: "Rent review", blobSecret: "s" }, rows, h.deps);
 
   assert.equal(result.sent, true);
-  assert.equal(h.calls.replies.length, 1, "exactly one email");
-  assert.deepEqual(h.calls.replies[0].attachments, [
-    "parcel-atlas-1.html",
-    "parcel-atlas-2.html",
-    "parcel-atlas-3.html",
+  assert.equal(result.sentCount, 3);
+  assert.equal(h.calls.replies.length, 3, "one email per report");
+  assert.deepEqual(h.calls.replies.map((reply) => reply.attachments), [
+    ["parcel-atlas-1.html"],
+    ["parcel-atlas-2.html"],
+    ["parcel-atlas-3.html"],
   ]);
   assert.equal(h.calls.gmailHandled, 1, "source message marked handled after send");
 });
 
-test("deliverReply refuses to send twice for the same job", async () => {
+test("deliverReply does not resend reports already delivered", async () => {
   const h = harness();
   const rows = [row({ row_number: 2, status: "generated", blob_pathname: "p/a.html", report_filename: "a.html" })];
   const job = { jobId: "job-1", sender: "agent@example.com", subject: "Rent review", blobSecret: "s" };
@@ -277,7 +279,7 @@ test("a Gmail send failure is recorded and does not mark the message handled", a
       h.deps,
     ),
   );
-  assert.deepEqual(h.calls.recorded, [{ status: "failed", reportCount: 1 }]);
+  assert.deepEqual(h.calls.recorded, [{ propertyReportId: "row-2", status: "failed", reportCount: 1 }]);
   assert.equal(h.calls.gmailHandled, 0, "unsent reply must not mark the source email handled");
 });
 

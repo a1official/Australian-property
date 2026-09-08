@@ -29,7 +29,7 @@ function createWorld(options: {
 } = {}) {
   const blob = new Map<string, string>();
   const rowsById = new Map<string, PropertyReportRecord>();
-  const replies: Array<{ status: string; reportCount: number }> = [];
+  const replies: Array<{ propertyReportId: string; status: string; reportCount: number }> = [];
   const emails: Array<{ recipient: string; attachments: string[]; bodyLength: number }> = [];
   const transitions: string[] = [];
   let gmailHandledAt: string | null = null;
@@ -140,12 +140,12 @@ function createWorld(options: {
       }
       emails.push({ recipient: input.recipient, attachments: input.attachments.map((a) => a.name), bodyLength: input.subject.length });
     },
-    hasSentReply: async () => replies.some((reply) => reply.status === "sent"),
-    recordReply: async (input: { reportCount: number; status: "sent" | "failed" }) => {
-      if (input.status === "sent" && replies.some((reply) => reply.status === "sent")) {
+    hasSentReply: async (propertyReportId: string) => replies.some((reply) => reply.status === "sent" && reply.propertyReportId === propertyReportId),
+    recordReply: async (input: { propertyReportId: string; reportCount: number; status: "sent" | "failed" }) => {
+      if (input.status === "sent" && replies.some((reply) => reply.status === "sent" && reply.propertyReportId === input.propertyReportId)) {
         throw new Error("duplicate sent reply rejected");
       }
-      replies.push({ status: input.status, reportCount: input.reportCount });
+      replies.push({ propertyReportId: input.propertyReportId, status: input.status, reportCount: input.reportCount });
     },
     markGmailHandled: async () => {
       gmailHandledAt = new Date().toISOString();
@@ -169,7 +169,7 @@ function createWorld(options: {
 
 const job = { jobId: "job-1", sender: "agent@example.com", subject: "Rent review", blobSecret: "secret" };
 
-test("three exact matches produce three reports and exactly one email", async () => {
+test("three exact matches produce three reports and three individual emails", async () => {
   const world = createWorld();
 
   const outcome = await processRows(world.rows(), world.deps);
@@ -186,16 +186,15 @@ test("three exact matches produce three reports and exactly one email", async ()
   assert.equal(reportPaths.length, 3, "three reports stored in Blob");
   assert.ok(world.blob.has("parcel-atlas/csv/job-1-secret/batch.csv"), "source CSV retained in Blob");
 
-  assert.equal(world.emails.length, 1, "exactly one reply email");
-  assert.deepEqual(world.emails[0].attachments.sort(), [
-    "parcel-atlas-5001.html",
-    "parcel-atlas-5002.html",
-    "parcel-atlas-5003.html",
+  assert.equal(world.emails.length, 3, "one reply email per generated report");
+  assert.deepEqual(world.emails.map((email) => email.attachments[0]).sort(), [
+    "parcel-atlas-5001.html", "parcel-atlas-5002.html", "parcel-atlas-5003.html",
   ]);
+  assert.ok(world.emails.every((email) => email.attachments.length === 1));
   assert.ok(world.gmailHandled(), "source message marked handled only after sending");
 });
 
-test("a crash after two reports resumes only the remaining one and sends one email", async () => {
+test("a crash after two reports resumes only the remaining one and sends individual emails", async () => {
   // One world throughout, so row state survives the simulated restart exactly
   // as it would in Neon. The third property fails once, then recovers.
   const world = createWorld({ reportFailures: new Map([[5003, 1]]) });
@@ -218,8 +217,8 @@ test("a crash after two reports resumes only the remaining one and sends one ema
 
   const reply = await deliverReply(job, finalRows, world.deps);
   assert.equal(reply.sent, true);
-  assert.equal(world.emails.length, 1, "one email containing all three reports");
-  assert.equal(world.emails[0].attachments.length, 3);
+  assert.equal(world.emails.length, 3, "one email for each completed report");
+  assert.ok(world.emails.every((email) => email.attachments.length === 1));
 });
 
 test("an unmatched address is parked and the other two still complete", async () => {
@@ -231,7 +230,8 @@ test("an unmatched address is parked and the other two still complete", async ()
 
   const reply = await deliverReply(job, world.rows(), world.deps);
   assert.equal(reply.sent, true, "the reply proceeds with the exact matches");
-  assert.equal(world.emails[0].attachments.length, 2);
+  assert.equal(world.emails.length, 2);
+  assert.ok(world.emails.every((email) => email.attachments.length === 1));
 });
 
 test("a Cotality 429 is retried and then succeeds without duplicating reports", async () => {
@@ -249,7 +249,7 @@ test("a Cotality 429 is retried and then succeeds without duplicating reports", 
   assert.equal(reportPaths.length, 3, "no duplicate report objects after retry");
 });
 
-test("a Browserless expiry during reply is retryable and does not mark Gmail handled", async () => {
+test("a reply failure is retryable and does not mark Gmail handled", async () => {
   const world = createWorld();
   await processRows(world.rows(), world.deps);
 
@@ -267,13 +267,13 @@ test("a Browserless expiry during reply is retryable and does not mark Gmail han
   await handleJobFailure(new Error("Target closed: Browserless session expired"), 1, world.deps);
   assert.ok(world.transitions.includes("retryable_failed"));
 
-  // The retry then succeeds and still sends exactly one email.
+  // The retry then sends one email for every report.
   const reply = await deliverReply(job, world.rows(), world.deps);
   assert.equal(reply.sent, true);
-  assert.equal(world.emails.length, 1);
+  assert.equal(world.emails.length, 3);
 });
 
-test("a Gmail send failure followed by a retry never sends two emails", async () => {
+test("a Gmail send failure followed by a retry sends every report once", async () => {
   const world = createWorld({ gmailFailures: 1 });
   await processRows(world.rows(), world.deps);
 
@@ -282,12 +282,37 @@ test("a Gmail send failure followed by a retry never sends two emails", async ()
 
   const retry = await deliverReply(job, world.rows(), world.deps);
   assert.equal(retry.sent, true);
-  assert.equal(world.emails.length, 1, "exactly one email across failure and retry");
+  assert.equal(world.emails.length, 3, "every generated report is delivered once after retry");
 
   // A third attempt must be refused by the sent-reply guard.
   const third = await deliverReply(job, world.rows(), world.deps);
   assert.equal(third.sent, false);
-  assert.equal(world.emails.length, 1);
+  assert.equal(world.emails.length, 3);
+});
+
+test("a mid-batch email failure resumes with only the reports still unsent", async () => {
+  const world = createWorld();
+  await processRows(world.rows(), world.deps);
+
+  let sends = 0;
+  const failsOnSecondEmail = {
+    ...world.deps,
+    sendReply: async (input: { recipient: string; subject: string; attachments: Array<{ name: string; mimeType: string; buffer: Buffer }>; reviewCount: number }) => {
+      sends += 1;
+      if (sends === 2) throw new Error("Temporary Gmail delivery failure");
+      await world.deps.sendReply(input);
+    },
+  } as typeof world.deps;
+
+  await assert.rejects(() => deliverReply(job, world.rows(), failsOnSecondEmail));
+  assert.equal(world.emails.length, 1, "the first report was already delivered");
+
+  const retry = await deliverReply(job, world.rows(), world.deps);
+  assert.equal(retry.sentCount, 2, "only the two unsent reports are retried");
+  assert.equal(world.emails.length, 3);
+  assert.deepEqual(world.emails.map((email) => email.attachments[0]).sort(), [
+    "parcel-atlas-5001.html", "parcel-atlas-5002.html", "parcel-atlas-5003.html",
+  ]);
 });
 
 test("reports stored in Blob are self-contained HTML", async () => {
