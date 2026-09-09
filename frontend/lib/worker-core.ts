@@ -77,7 +77,9 @@ export function replyIsDue(rows: PropertyReportRecord[]): boolean {
   return pendingRows(rows).length === 0 && generatedRows(rows).length > 0;
 }
 
-export function buildReplySubject(subject: string, reportCount: number): string {
+export function buildReplySubject(subject: string, reportCount: number, propertyAddress?: string | null): string {
+  const address = propertyAddress?.replace(/[\r\n\t]+/g, " ").trim();
+  if (address) return `Rent review — ${address}`;
   const base = subject.replace(/^(re:\s*)+/i, "").trim() || "Property rent review";
   return `Re: ${base} — Parcel Atlas reports (${reportCount})`;
 }
@@ -187,7 +189,7 @@ export async function deliverReply(
     try {
       await deps.sendReply({
         recipient: job.sender,
-        subject: buildReplySubject(job.subject, 1),
+        subject: buildReplySubject(job.subject, 1, row.normalized_address || row.original_address),
         attachments: [attachment],
         ownerName: row.owner_name,
         address: row.normalized_address || row.original_address,

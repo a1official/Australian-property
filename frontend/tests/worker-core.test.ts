@@ -294,6 +294,10 @@ test("reply subject is prefixed once and states the report count", () => {
   assert.equal(buildReplySubject("Rent review", 3), "Re: Rent review — Parcel Atlas reports (3)");
   assert.equal(buildReplySubject("Re: Re: Rent review", 1), "Re: Rent review — Parcel Atlas reports (1)");
   assert.match(buildReplySubject("", 2), /Property rent review/);
+  assert.equal(
+    buildReplySubject("CSV request", 1, "14 Charles Street, Baulkham Hills NSW 2153"),
+    "Rent review — 14 Charles Street, Baulkham Hills NSW 2153",
+  );
 });
 
 test("job failure schedules a bounded retry for transient errors", async () => {
