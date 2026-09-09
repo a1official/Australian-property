@@ -44,6 +44,8 @@ export type WorkerDeps = {
     attachments: Array<{ name: string; mimeType: string; buffer: Buffer }>;
     /** Optional name from this report's CSV row, used only for the salutation. */
     ownerName?: string | null;
+    /** Optional owner email from the CSV row, shown after the owner name. */
+    ownerEmail?: string | null;
     address?: string;
     currentRent?: number | null;
     bedrooms?: number | null;
@@ -192,6 +194,7 @@ export async function deliverReply(
         subject: buildReplySubject(job.subject, 1, row.normalized_address || row.original_address),
         attachments: [attachment],
         ownerName: row.owner_name,
+        ownerEmail: row.owner_email,
         address: row.normalized_address || row.original_address,
         currentRent: row.current_rent === null ? null : Number(row.current_rent),
         bedrooms: row.bedrooms,
@@ -255,7 +258,7 @@ export async function handleJobFailure(
 export async function loadJobAddresses(
   attachment: { filename: string; blob_pathname: string | null },
   deps: WorkerDeps,
-): Promise<Array<{ rowNumber: number; address: string; ownerName: string | null }>> {
+): Promise<Array<{ rowNumber: number; address: string; ownerName: string | null; ownerEmail: string | null; currentRent: number | null }>> {
   if (!attachment.blob_pathname) {
     throw Object.assign(new Error("CSV attachment has no Blob pathname; cannot process job."), { permanent: true });
   }

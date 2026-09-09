@@ -168,9 +168,11 @@ export function buildReplySubject(subject: string): string {
   return `Re: ${base}`;
 }
 
-function greeting(ownerName?: string | null): string {
+function greeting(ownerName?: string | null, ownerEmail?: string | null): string {
   const normalized = ownerName?.replace(/[\r\n\t]+/g, " ").trim();
-  return normalized ? `Hello ${normalized},` : "Hi,";
+  const email = ownerEmail?.replace(/[\r\n\t]+/g, "").trim().toLowerCase();
+  if (normalized && email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return `Hello ${normalized} (${email}),`;
+  return normalized ? `Hello ${normalized},` : email ? `Hello ${email},` : "Hi,";
 }
 
 export type RentReviewEmailContext = {
@@ -182,7 +184,7 @@ export type RentReviewEmailContext = {
   marketRentAverage?: number | null;
 };
 
-function rentReviewLines(ownerName: string | null | undefined, context: RentReviewEmailContext): string[] | null {
+function rentReviewLines(ownerName: string | null | undefined, ownerEmail: string | null | undefined, context: RentReviewEmailContext): string[] | null {
   const current = Number(context.currentRent);
   const average = Number(context.marketRentAverage);
   if (!Number.isFinite(current) || current <= 0 || !Number.isFinite(average) || average <= 0) return null;
@@ -201,7 +203,7 @@ function rentReviewLines(ownerName: string | null | undefined, context: RentRevi
       ? [`Your tenant is paying ${money(current)}/week, which is below the estimated market rent of ${money(average)}/week.`, `It is suggested to consider increasing the rent toward ${money(average)}/week.${notice}`]
       : [`Your tenant is paying ${money(current)}/week, which is above the estimated market rent of ${money(average)}/week.`, "It is suggested not to increase the rent at this time and to review the rent again at the next appropriate review point."];
   return [
-    greeting(ownerName), "", "Hope you are well.", "",
+    greeting(ownerName, ownerEmail), "", "Hope you are well.", "",
     `I would like to provide you with the rent review for ${context.address}.`, "",
     "Current rental market status",
     `${bedroomText} in the surrounding area are leased and advertised between ${range} per week, depending on condition.`,
@@ -211,12 +213,15 @@ function rentReviewLines(ownerName: string | null | undefined, context: RentRevi
   ];
 }
 
-export function replyPlainTextBody(reportCount: number, reviewCount: number, ownerName?: string | null, context?: RentReviewEmailContext): string {
-  const rentReview = context ? rentReviewLines(ownerName, context) : null;
+export function replyPlainTextBody(reportCount: number, reviewCount: number, ownerName?: string | null, ownerEmailOrContext?: string | null | RentReviewEmailContext, context?: RentReviewEmailContext): string {
+  // Keep the original fourth-argument context API working for older callers.
+  const ownerEmail = typeof ownerEmailOrContext === "string" ? ownerEmailOrContext : null;
+  const rentContext = context ?? (typeof ownerEmailOrContext === "object" ? ownerEmailOrContext : undefined);
+  const rentReview = rentContext ? rentReviewLines(ownerName, ownerEmail, rentContext) : null;
   if (rentReview) return rentReview.join("\n");
   const plural = reportCount === 1 ? "" : "s";
   const lines = [
-    greeting(ownerName),
+    greeting(ownerName, ownerEmail),
     "",
     `Attached ${reportCount === 1 ? "is" : "are"} your Parcel Atlas rent review report${plural} for the ${reportCount} propert${reportCount === 1 ? "y" : "ies"} matched from your CSV.`,
     "",
@@ -232,7 +237,7 @@ export function replyPlainTextBody(reportCount: number, reviewCount: number, own
   return lines.join("\n");
 }
 
-export function replyHtmlBody(reportCount: number, reviewCount: number, reportNames: string[], ownerName?: string | null, context?: RentReviewEmailContext): string {
+export function replyHtmlBody(reportCount: number, reviewCount: number, reportNames: string[], ownerName?: string | null, ownerEmailOrContext?: string | null | RentReviewEmailContext, context?: RentReviewEmailContext): string {
   const escape = (value: string) =>
     value.replace(/[&<>"']/g, (character) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character] ?? character);
@@ -241,13 +246,16 @@ export function replyHtmlBody(reportCount: number, reviewCount: number, reportNa
     reviewCount > 0
       ? `<p style="color:#5f4a18;background:#fff0c7;border-left:4px solid #d69c1d;padding:10px 12px;">${reviewCount} address${reviewCount === 1 ? "" : "es"} could not be matched to a single property and ${reviewCount === 1 ? "was" : "were"} left for manual review.</p>`
       : "";
-  const rentReview = context ? rentReviewLines(ownerName, context) : null;
+  // Keep the original fifth-argument context API working for older callers.
+  const ownerEmail = typeof ownerEmailOrContext === "string" ? ownerEmailOrContext : null;
+  const rentContext = context ?? (typeof ownerEmailOrContext === "object" ? ownerEmailOrContext : undefined);
+  const rentReview = rentContext ? rentReviewLines(ownerName, ownerEmail, rentContext) : null;
   if (rentReview) {
     return ["<div style='font-family:Arial,sans-serif;font-size:14px;color:#172022;line-height:1.55;max-width:680px;'>", ...rentReview.map((line) => line ? `<p>${escape(line)}</p>` : ""), "</div>"].join("");
   }
   return [
     '<div style="font-family:Arial,sans-serif;font-size:14px;color:#172022;line-height:1.5;">',
-    `<p>${escape(greeting(ownerName))}</p>`,
+    `<p>${escape(greeting(ownerName, ownerEmail))}</p>`,
     `<p>Attached ${reportCount === 1 ? "is" : "are"} your Parcel Atlas rent review report${reportCount === 1 ? "" : "s"} for the <strong>${reportCount}</strong> propert${reportCount === 1 ? "y" : "ies"} matched from your CSV.</p>`,
     "<p>Each report contains the matched property attributes, qualifying comparable rentals, and the calculated average weekly rent based on Cotality/CoreLogic evidence.</p>",
     items ? `<ul>${items}</ul>` : "",

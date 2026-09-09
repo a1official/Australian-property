@@ -249,6 +249,7 @@ async function discoverAndRegister(): Promise<number> {
           rowNumber: address.rowNumber,
           address: address.address,
           ownerName: address.ownerName,
+          ownerEmail: address.ownerEmail,
           currentRent: address.currentRent,
         })),
       );
@@ -296,6 +297,7 @@ function buildDeps(job: PipelineJob, blobSecret: string, jobLog: ReturnType<type
           })),
           reviewCount: input.reviewCount,
           ownerName: input.ownerName,
+          ownerEmail: input.ownerEmail,
           rentReview: {
             address: input.address ?? "",
             currentRent: input.currentRent,

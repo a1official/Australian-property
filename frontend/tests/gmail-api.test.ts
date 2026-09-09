@@ -136,6 +136,11 @@ test("an owner name personalises the email salutation and is HTML-escaped", () =
   assert.match(replyHtmlBody(1, 0, ["a.html"], "Alice <Example>"), /Hello Alice &lt;Example&gt;,/);
 });
 
+test("an owner email follows the owner name in the email greeting", () => {
+  assert.match(replyPlainTextBody(1, 0, "Alice Example", "alice@example.com"), /^Hello Alice Example \(alice@example\.com\),/);
+  assert.match(replyHtmlBody(1, 0, ["report.pdf"], "Alice Example", "alice@example.com"), /Hello Alice Example \(alice@example\.com\),/);
+});
+
 test("rent review email uses the two-percent market band and changes its recommendation", () => {
   const context = { address: "14 Charles Street Baulkham Hills NSW 2153", bedrooms: 4, marketRentLow: 780, marketRentHigh: 900, marketRentAverage: 850 };
   assert.match(replyPlainTextBody(1, 0, "Ankush", { ...context, currentRent: 850 }), /keep the rent at the same amount/i);
