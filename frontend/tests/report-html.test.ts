@@ -20,11 +20,17 @@ function candidate(total: number, weeklyRent: number | null, extra: Record<strin
   };
 }
 
-test("comparables below the score threshold are excluded entirely", () => {
+test("lower-scoring comparables fill the report to five when needed", () => {
   const result = selectQualityComparableRents([candidate(59, 600), candidate(60, 620)]);
-  assert.equal(result.selected.length, 1);
-  assert.equal((result.selected[0].score as { total: number }).total, 60);
+  assert.equal(result.selected.length, 2);
+  assert.deepEqual(result.selected.map((item) => (item.score as { total: number }).total), [60, 59]);
   assert.equal(result.excluded.length, 0);
+});
+
+test("five high-scoring comparables do not include lower-scoring filler", () => {
+  const result = selectQualityComparableRents([candidate(80, 600), candidate(79, 610), candidate(78, 620), candidate(77, 630), candidate(76, 640), candidate(59, 650)]);
+  assert.equal(result.selected.length, 5);
+  assert.ok(result.selected.every((item) => (item.score as { total: number }).total >= 60));
 });
 
 test("missing or implausible rents are excluded and reported", () => {

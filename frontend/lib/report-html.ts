@@ -15,6 +15,7 @@ export type ReportCandidate = JsonRecord;
 export type ImageEmbedder = (sources: Array<string | null | undefined>) => Promise<Map<string, string>>;
 
 export const MIN_COMPARABLE_SCORE = 60;
+export const MIN_REPORT_CANDIDATES = 5;
 const MIN_PLAUSIBLE_WEEKLY_RENT = 100;
 const MAX_PLAUSIBLE_WEEKLY_RENT = 25_000;
 
@@ -71,33 +72,45 @@ function median(values: number[]): number {
 }
 
 /**
- * Applies the report quality rules: score threshold, confirmed weekly rent, and
- * market-outlier exclusion. Returns the included and excluded candidate sets.
+ * Applies rent-quality rules, then prefers 60+ similarity matches. When fewer
+ * than five preferred matches are available, the strongest lower-scoring,
+ * rent-qualified properties fill the evidence set. This keeps reports useful
+ * without hiding their individual similarity scores.
  */
 export function selectQualityComparableRents(candidates: ReportCandidate[]): {
   selected: ReportCandidate[];
   excluded: ReportCandidate[];
 } {
-  const scoreEligible = candidates.filter(
-    (candidate) => Number(record(candidate.score).total) >= MIN_COMPARABLE_SCORE,
+  const ranked = [...candidates].sort(
+    (left, right) => Number(record(right.score).total) - Number(record(left.score).total),
   );
-  const hardValid = scoreEligible.filter((candidate) => {
+  const hardValid = ranked.filter((candidate) => {
     const rent = Number(candidate.weeklyRent);
     return Number.isFinite(rent) && rent >= MIN_PLAUSIBLE_WEEKLY_RENT && rent <= MAX_PLAUSIBLE_WEEKLY_RENT;
   });
-  const excluded = scoreEligible.filter((candidate) => !hardValid.includes(candidate));
-  let selected = hardValid;
+  const excluded = ranked.filter((candidate) => !hardValid.includes(candidate));
+  let qualityCandidates = hardValid;
 
   if (hardValid.length >= 3) {
     const marketMedian = median(hardValid.map((candidate) => Number(candidate.weeklyRent)));
     const lowerBound = Math.max(MIN_PLAUSIBLE_WEEKLY_RENT, marketMedian * 0.35);
     const upperBound = Math.min(MAX_PLAUSIBLE_WEEKLY_RENT, marketMedian * 3);
-    selected = hardValid.filter((candidate) => {
+    qualityCandidates = hardValid.filter((candidate) => {
       const rent = Number(candidate.weeklyRent);
       return rent >= lowerBound && rent <= upperBound;
     });
-    excluded.push(...hardValid.filter((candidate) => !selected.includes(candidate)));
+    excluded.push(...hardValid.filter((candidate) => !qualityCandidates.includes(candidate)));
   }
+
+  const preferred = qualityCandidates.filter(
+    (candidate) => Number(record(candidate.score).total) >= MIN_COMPARABLE_SCORE,
+  );
+  const lowerScoring = qualityCandidates.filter(
+    (candidate) => Number(record(candidate.score).total) < MIN_COMPARABLE_SCORE,
+  );
+  const selected = preferred.length >= MIN_REPORT_CANDIDATES
+    ? preferred
+    : [...preferred, ...lowerScoring.slice(0, MIN_REPORT_CANDIDATES - preferred.length)];
 
   return { selected: selected.slice(0, 12), excluded };
 }
@@ -264,7 +277,7 @@ export async function buildReportHtml(input: {
     fact("Sale date", saleDate),
     fact("Data modules", moduleCount),
     "</div>",
-    "<h2>Similar homes</h2><p>The candidate pool is sourced from the exact CoreLogic locality, then enriched and ranked using the configured 100-point property-similarity score. Only matches scoring 60/100 or above with confirmed weekly rental data are included in this report.</p>",
+    "<h2>Similar homes</h2><p>The candidate pool is sourced from the exact CoreLogic locality, then enriched and ranked using the configured 100-point property-similarity score. Matches scoring 60/100 or above are preferred. When fewer than five qualify, the strongest lower-scoring properties with confirmed weekly rent fill the evidence set; every score remains visible.</p>",
     averageWeeklyRent === null
       ? ""
       : "<div class='rent-summary'><div><span>Average weekly rent</span><strong>" +
@@ -279,7 +292,7 @@ export async function buildReportHtml(input: {
     candidateRows || "<p>No comparable properties met the score and rent-quality requirements.</p>",
     "</div><div class='note'><strong>Distance handling:</strong> ",
     distanceNote,
-    "<br><br><strong>Comparable inclusion rule:</strong> score ≥ 60 / 100, confirmed weekly rent, and rent-quality validation · <strong>Score weights:</strong> type 35 · bedrooms 20 · bathrooms 15 · car spaces 10 · floor/land area 10 · locality or distance 10.</div><p class='source'>Source coverage: ",
+    "<br><br><strong>Comparable inclusion rule:</strong> score ≥ 60 / 100 is preferred; lower scores are used only when needed to reach five rent-qualified candidates. All included properties require confirmed weekly rent and rent-quality validation · <strong>Score weights:</strong> type 35 · bedrooms 20 · bathrooms 15 · car spaces 10 · floor/land area 10 · locality or distance 10.</div><p class='source'>Source coverage: ",
     moduleCount,
     " connected Cotality response modules were included when this report was generated. Estimates, advertisements and registered sales are different evidence types and should not be treated as interchangeable.</p></main></body></html>",
   ].join("");

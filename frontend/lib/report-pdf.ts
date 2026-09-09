@@ -268,7 +268,7 @@ export async function buildReportPdf(input: {
     document.y = y + 49;
   }
 
-  drawSectionTitle(document, "Qualified candidates", "Comparable properties", "Included only where the similarity score is at least 60/100 and weekly rent passes the report quality checks.");
+  drawSectionTitle(document, "Qualified candidates", "Comparable properties", "Scores of 60/100 or above are preferred. When fewer than five qualify, the strongest lower-scoring rent-qualified candidates fill the evidence set.");
   if (selected.length) {
     selected.forEach((candidate, index) => drawComparable(document, candidate, index, typeof candidate.imageUrl === "string" ? images.get(candidate.imageUrl) : undefined, now));
   } else {
@@ -282,7 +282,7 @@ export async function buildReportPdf(input: {
     ? "Distance is calculated from reference and candidate latitude/longitude using the Haversine formula."
     : "The reference property has no usable Cotality coordinate, so no distance is invented and the exact-locality fallback score is used.";
   document.fillColor(BRAND_NAVY).font("Helvetica-Bold").fontSize(6.5).text("METHOD AND DATA COVERAGE", PAGE_MARGIN + 12, noteY + 11, { characterSpacing: 0.6 });
-  document.fillColor("#475464").font("Helvetica").fontSize(7.1).text(`${distanceText}\n\nComparable inclusion: score 60/100 or higher, confirmed weekly rent, and rent-quality validation. Score weights: type 35 - bedrooms 20 - bathrooms 15 - car spaces 10 - floor/land area 10 - locality or distance 10.`, PAGE_MARGIN + 12, noteY + 23, { width: CONTENT_WIDTH - 24, lineGap: 2 });
+  document.fillColor("#475464").font("Helvetica").fontSize(7.1).text(`${distanceText}\n\nComparable inclusion: score 60/100 or higher is preferred. Lower scores may be used only to reach five rent-qualified candidates. Score weights: type 35 - bedrooms 20 - bathrooms 15 - car spaces 10 - floor/land area 10 - locality or distance 10.`, PAGE_MARGIN + 12, noteY + 23, { width: CONTENT_WIDTH - 24, lineGap: 2 });
   document.y = noteY + 84;
   document.end();
   return { filename: reportPdfFilenameFor(input.address, now), content: await completed, emailData };
