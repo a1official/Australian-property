@@ -78,23 +78,50 @@ function readWorkspaceEnv() {
 
 function configuration() {
   const fallback = readWorkspaceEnv();
+  const setting = (name: string, defaultValue: string) => process.env[name] || fallback[name] || defaultValue;
   return {
-    clientId: process.env.CORELOGIC_CLIENT_ID || fallback.CORELOGIC_CLIENT_ID,
-    clientSecret: process.env.CORELOGIC_CLIENT_SECRET || fallback.CORELOGIC_CLIENT_SECRET,
-    baseUrl:
-      process.env.CORELOGIC_SANDBOX_BASE_URL ||
-      fallback.CORELOGIC_SANDBOX_BASE_URL ||
-      "https://api-sbox.corelogic.asia",
+    clientId: setting("CORELOGIC_CLIENT_ID", ""),
+    clientSecret: setting("CORELOGIC_CLIENT_SECRET", ""),
+    // Wave 2 moved each proxy from the shared api.corelogic.asia host to a
+    // dedicated Cotality hostname. Do not collapse these into one base URL:
+    // the old service path segment is part of the hostname now.
+    accessBaseUrl: setting("COTALITY_ACCESS_BASE_URL", "https://access.api.cotality.com.au"),
+    searchBaseUrl: setting("COTALITY_SEARCH_BASE_URL", "https://search.api.cotality.com.au"),
+    propertyBaseUrl: setting("COTALITY_PROPERTY_BASE_URL", "https://property-au.api.cotality.com.au"),
+    propertyDetailsBaseUrl: setting("COTALITY_PROPERTY_DETAILS_BASE_URL", "https://property-details.api.cotality.com.au"),
+    propertyTimelineBaseUrl: setting("COTALITY_PROPERTY_TIMELINE_BASE_URL", "https://property-timeline.api.cotality.com.au"),
+    avmBaseUrl: setting("COTALITY_AVM_BASE_URL", "https://avm.api.cotality.com.au"),
   };
 }
 
+function joinUrl(baseUrl: string, path: string) {
+  return `${baseUrl.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function upstreamUrl(path: string) {
+  const config = configuration();
+  const routes: Array<[string, string]> = [
+    ["/access", config.accessBaseUrl],
+    ["/search", config.searchBaseUrl],
+    ["/property-details", config.propertyDetailsBaseUrl],
+    ["/property-timeline", config.propertyTimelineBaseUrl],
+    ["/property/au", config.propertyBaseUrl],
+    ["/avm", config.avmBaseUrl],
+  ];
+
+  const matched = routes.find(([prefix]) => path === prefix || path.startsWith(`${prefix}/`) || path.startsWith(`${prefix}?`));
+  if (!matched) throw new Error(`No Cotality domain route is configured for ${path.split("?")[0]}.`);
+  const [prefix, baseUrl] = matched;
+  return joinUrl(baseUrl, path.slice(prefix.length) || "/");
+}
+
 async function refreshAccessToken() {
-  const { clientId, clientSecret, baseUrl } = configuration();
+  const { clientId, clientSecret } = configuration();
   if (!clientId || !clientSecret) {
     throw new Error("CoreLogic credentials are not configured on the server.");
   }
 
-  const response = await fetch(`${baseUrl}/access/as/token.oauth2`, {
+  const response = await fetch(upstreamUrl("/access/as/token.oauth2"), {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
     body: new URLSearchParams({
@@ -127,12 +154,11 @@ async function accessToken() {
 }
 
 async function requestUpstream(path: string, expiresAt: number): Promise<Omit<CoreLogicResult, "cacheStatus">> {
-  const { baseUrl } = configuration();
   const cachedAt = new Date().toISOString();
   try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const token = await accessToken();
-      const response = await queueCotalityRequest(() => fetch(`${baseUrl}${path}`, {
+      const response = await queueCotalityRequest(() => fetch(upstreamUrl(path), {
         headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
         cache: "no-store",
         signal: AbortSignal.timeout(12_000),
