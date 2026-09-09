@@ -176,8 +176,13 @@ export async function sendReportReply(
   if (!params.attachments.length) throw new Error("Refusing to send a reply with no report attachments.");
 
   const reviewCount = params.reviewCount ?? 0;
+  // Gmail validates the address against the OAuth mailbox.  Supplying its
+  // address here lets recipients see the requested display name while Gmail
+  // retains the authenticated mailbox as the sender.
+  const from = `Vincent <${await client.getMailboxEmail()}>`;
   const raw = buildMimeReply({
     to: params.to,
+    from,
     subject: buildReplySubject(params.subject),
     inReplyTo: params.rfc822MessageId,
     references: params.rfc822MessageId,

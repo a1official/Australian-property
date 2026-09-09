@@ -40,6 +40,8 @@ export type DiscoveredAttachment = {
 };
 
 export class GmailApiClient {
+  private mailboxEmailPromise: Promise<string> | null = null;
+
   constructor(
     private readonly accessToken: string,
     private readonly fetchImpl: FetchLike = fetch,
@@ -83,6 +85,22 @@ export class GmailApiClient {
 
   async getMessage(id: string): Promise<GmailMessage> {
     return this.request<GmailMessage>(`/messages/${encodeURIComponent(id)}?format=full`);
+  }
+
+  /**
+   * Returns the actual address of the OAuth-connected mailbox.  The database
+   * deliberately stores only a masked address, so this is resolved from Gmail
+   * when a message needs a complete RFC 5322 From header.
+   */
+  async getMailboxEmail(): Promise<string> {
+    this.mailboxEmailPromise ??= this.request<{ emailAddress?: string }>("/profile").then((profile) => {
+      const email = profile.emailAddress?.trim();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        throw new Error("Gmail did not return a valid mailbox address.");
+      }
+      return email;
+    });
+    return this.mailboxEmailPromise;
   }
 
   async getAttachment(messageId: string, attachmentId: string): Promise<Buffer> {
@@ -265,6 +283,7 @@ export type ReplyAttachment = { filename: string; mimeType: string; content: str
  */
 export function buildMimeReply(options: {
   to: string;
+  from?: string;
   subject: string;
   inReplyTo?: string;
   references?: string;
@@ -277,6 +296,7 @@ export function buildMimeReply(options: {
 
   const lines: string[] = [
     `To: ${options.to}`,
+    ...(options.from ? [`From: ${options.from}`] : []),
     `Subject: ${encodeHeaderValue(options.subject)}`,
     "MIME-Version: 1.0",
   ];
