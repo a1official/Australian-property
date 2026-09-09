@@ -40,8 +40,6 @@ export type DiscoveredAttachment = {
 };
 
 export class GmailApiClient {
-  private mailboxEmailPromise: Promise<string> | null = null;
-
   constructor(
     private readonly accessToken: string,
     private readonly fetchImpl: FetchLike = fetch,
@@ -85,22 +83,6 @@ export class GmailApiClient {
 
   async getMessage(id: string): Promise<GmailMessage> {
     return this.request<GmailMessage>(`/messages/${encodeURIComponent(id)}?format=full`);
-  }
-
-  /**
-   * Returns the actual address of the OAuth-connected mailbox.  The database
-   * deliberately stores only a masked address, so this is resolved from Gmail
-   * when a message needs a complete RFC 5322 From header.
-   */
-  async getMailboxEmail(): Promise<string> {
-    this.mailboxEmailPromise ??= this.request<{ emailAddress?: string }>("/profile").then((profile) => {
-      const email = profile.emailAddress?.trim();
-      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        throw new Error("Gmail did not return a valid mailbox address.");
-      }
-      return email;
-    });
-    return this.mailboxEmailPromise;
   }
 
   async getAttachment(messageId: string, attachmentId: string): Promise<Buffer> {
@@ -225,7 +207,7 @@ function rentReviewLines(ownerName: string | null | undefined, context: RentRevi
     `${bedroomText} in the surrounding area are leased and advertised between ${range} per week, depending on condition.`,
     `Based on the attached rent review, the achievable rent for your property is estimated at ${money(average)}/week.`, "",
     "Suggestion", ...suggestion, "", "Please find the detailed rent review attached.", "",
-    "Should you have any further enquiries, please do not hesitate to contact me.", "", "Kind regards,", "Murdoch Lee",
+    "Should you have any further enquiries, please do not hesitate to contact me.", "", "Kind regards,", "Vincent",
   ];
 }
 
@@ -246,7 +228,7 @@ export function replyPlainTextBody(reportCount: number, reviewCount: number, own
       `${reviewCount} address${reviewCount === 1 ? "" : "es"} could not be matched to a single property and ${reviewCount === 1 ? "was" : "were"} left for manual review, so ${reviewCount === 1 ? "it is" : "they are"} not included here.`,
     );
   }
-  lines.push("", "Kind regards,", "Parcel Atlas");
+  lines.push("", "Kind regards,", "Vincent");
   return lines.join("\n");
 }
 
@@ -270,7 +252,7 @@ export function replyHtmlBody(reportCount: number, reviewCount: number, reportNa
     "<p>Each report contains the matched property attributes, qualifying comparable rentals, and the calculated average weekly rent based on Cotality/CoreLogic evidence.</p>",
     items ? `<ul>${items}</ul>` : "",
     review,
-    "<p>Kind regards,<br>Parcel Atlas</p>",
+    "<p>Kind regards,<br>Vincent</p>",
     "</div>",
   ].join("");
 }
@@ -283,7 +265,6 @@ export type ReplyAttachment = { filename: string; mimeType: string; content: str
  */
 export function buildMimeReply(options: {
   to: string;
-  from?: string;
   subject: string;
   inReplyTo?: string;
   references?: string;
@@ -296,7 +277,6 @@ export function buildMimeReply(options: {
 
   const lines: string[] = [
     `To: ${options.to}`,
-    ...(options.from ? [`From: ${options.from}`] : []),
     `Subject: ${encodeHeaderValue(options.subject)}`,
     "MIME-Version: 1.0",
   ];

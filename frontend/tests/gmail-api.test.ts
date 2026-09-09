@@ -159,7 +159,6 @@ test("the HTML body escapes attachment names", () => {
 test("a MIME reply carries every attachment and both body parts", () => {
   const raw = buildMimeReply({
     to: "agent@example.com",
-    from: "Vincent <reports@example.com>",
     subject: "Re: Rent review",
     inReplyTo: "<original@mail.gmail.com>",
     references: "<original@mail.gmail.com>",
@@ -174,7 +173,6 @@ test("a MIME reply carries every attachment and both body parts", () => {
 
   const decoded = decodeRaw(raw);
   assert.match(decoded, /^To: agent@example.com/m);
-  assert.match(decoded, /^From: Vincent <reports@example\.com>/m);
   assert.match(decoded, /^Subject: Re: Rent review/m);
   assert.match(decoded, /^In-Reply-To: <original@mail\.gmail\.com>/m, "threading header present");
   assert.match(decoded, /multipart\/mixed/);
