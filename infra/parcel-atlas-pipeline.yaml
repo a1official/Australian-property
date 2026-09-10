@@ -1,0 +1,391 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Parcel Atlas rent-review pipeline. Manual-trigger only: the Vercel frontend
+  calls the dispatch function, which fans out one SQS message per property.
+  No EventBridge or cron is created, by design.
+
+Parameters:
+  ResourcePrefix:
+    Type: String
+    Default: parcel-atlas
+    Description: Prefix for every resource; the deploy policy is scoped to it.
+  ReportWorkerConcurrency:
+    Type: Number
+    Default: 2
+    Description: >
+      Maximum concurrent report workers. Caps Cotality load; keep low.
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Storage
+  # ---------------------------------------------------------------------------
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    # Retain so a stack teardown cannot destroy generated reports.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ResourcePrefix}-artifacts-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 90
+          - Id: AbortIncompleteUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  # ---------------------------------------------------------------------------
+  # Queues. Each has a dead-letter queue so a poison message cannot loop.
+  # ---------------------------------------------------------------------------
+  ReportDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ResourcePrefix}-report-dlq"
+      MessageRetentionPeriod: 1209600
+
+  ReportQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ResourcePrefix}-report-queue"
+      # Must exceed the worker timeout, or SQS redelivers work still running.
+      VisibilityTimeout: 780
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ReportDlq.Arn
+        maxReceiveCount: 3
+
+  DeliveryDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ResourcePrefix}-delivery-dlq"
+      MessageRetentionPeriod: 1209600
+
+  DeliveryQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ResourcePrefix}-delivery-queue"
+      VisibilityTimeout: 120
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeliveryDlq.Arn
+        maxReceiveCount: 5
+
+  # ---------------------------------------------------------------------------
+  # Secrets. Values are set out of band; the template never contains them.
+  # ---------------------------------------------------------------------------
+  PipelineSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "${ResourcePrefix}/pipeline"
+      Description: >
+        Runtime secrets: DATABASE_URL, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET,
+        GMAIL_TOKEN_ENCRYPTION_KEY, CORELOGIC_CLIENT_ID,
+        CORELOGIC_CLIENT_SECRET, DISPATCH_SERVICE_TOKEN.
+
+  # ---------------------------------------------------------------------------
+  # IAM. One role per function, each least-privilege.
+  # ---------------------------------------------------------------------------
+  DispatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourcePrefix}-dispatch-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: dispatch
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ResourcePrefix}-*"
+              # Dispatch only writes the source CSV.
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "${ArtifactBucket.Arn}/csv/*"
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt ReportQueue.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref PipelineSecret
+
+  ReportWorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourcePrefix}-report-worker-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: reportWorker
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ResourcePrefix}-*"
+              - Effect: Allow
+                Action: [s3:GetObject, s3:PutObject]
+                Resource: !Sub "${ArtifactBucket.Arn}/*"
+              - Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes, sqs:ChangeMessageVisibility]
+                Resource: !GetAtt ReportQueue.Arn
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt DeliveryQueue.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref PipelineSecret
+
+  DeliveryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ResourcePrefix}-delivery-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: delivery
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/${ResourcePrefix}-*"
+              # Delivery reads reports to attach them; it never writes objects.
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "${ArtifactBucket.Arn}/reports/*"
+              - Effect: Allow
+                Action: [sqs:ReceiveMessage, sqs:DeleteMessage, sqs:GetQueueAttributes, sqs:ChangeMessageVisibility]
+                Resource: !GetAtt DeliveryQueue.Arn
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref PipelineSecret
+
+  # ---------------------------------------------------------------------------
+  # Log groups, declared so retention is enforced rather than infinite.
+  # ---------------------------------------------------------------------------
+  DispatchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ResourcePrefix}-dispatch"
+      RetentionInDays: !Ref LogRetentionDays
+
+  ReportWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ResourcePrefix}-report-worker"
+      RetentionInDays: !Ref LogRetentionDays
+
+  DeliveryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ResourcePrefix}-delivery"
+      RetentionInDays: !Ref LogRetentionDays
+
+  # ---------------------------------------------------------------------------
+  # Functions. Code is a placeholder here and updated by the deploy script,
+  # so infrastructure and code can be rolled independently.
+  # ---------------------------------------------------------------------------
+  DispatchFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: DispatchLogGroup
+    Properties:
+      FunctionName: !Sub "${ResourcePrefix}-dispatch"
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt DispatchRole.Arn
+      MemorySize: 512
+      Timeout: 60
+      Code:
+        ZipFile: |
+          exports.handler = async () => ({
+            statusCode: 503,
+            body: JSON.stringify({ ok: false, error: "Dispatch code not yet deployed." }),
+          });
+      Environment:
+        Variables:
+          RESOURCE_PREFIX: !Ref ResourcePrefix
+          ARTIFACT_BUCKET: !Ref ArtifactBucket
+          REPORT_QUEUE_URL: !Ref ReportQueue
+          PIPELINE_SECRET_ARN: !Ref PipelineSecret
+          NODE_OPTIONS: --enable-source-maps
+
+  ReportWorkerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ReportWorkerLogGroup
+    Properties:
+      FunctionName: !Sub "${ResourcePrefix}-report-worker"
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt ReportWorkerRole.Arn
+      # PDF and image work needs headroom; memory also scales CPU.
+      MemorySize: 2048
+      Timeout: 720
+      Code:
+        ZipFile: |
+          exports.handler = async () => {
+            throw new Error("Report worker code not yet deployed.");
+          };
+      Environment:
+        Variables:
+          RESOURCE_PREFIX: !Ref ResourcePrefix
+          ARTIFACT_BUCKET: !Ref ArtifactBucket
+          DELIVERY_QUEUE_URL: !Ref DeliveryQueue
+          PIPELINE_SECRET_ARN: !Ref PipelineSecret
+          COTALITY_MAX_CONCURRENT_REQUESTS: "3"
+          COTALITY_MAX_STREET_PAGES: "75"
+          COTALITY_STREET_PAGE_CONCURRENCY: "8"
+          NODE_OPTIONS: --enable-source-maps
+
+  DeliveryFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: DeliveryLogGroup
+    Properties:
+      FunctionName: !Sub "${ResourcePrefix}-delivery"
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Role: !GetAtt DeliveryRole.Arn
+      MemorySize: 512
+      Timeout: 120
+      Code:
+        ZipFile: |
+          exports.handler = async () => {
+            throw new Error("Delivery code not yet deployed.");
+          };
+      Environment:
+        Variables:
+          RESOURCE_PREFIX: !Ref ResourcePrefix
+          ARTIFACT_BUCKET: !Ref ArtifactBucket
+          PIPELINE_SECRET_ARN: !Ref PipelineSecret
+          NODE_OPTIONS: --enable-source-maps
+
+  # ---------------------------------------------------------------------------
+  # Event source mappings. maximumConcurrency caps Cotality load at the queue.
+  # ---------------------------------------------------------------------------
+  ReportQueueMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt ReportQueue.Arn
+      FunctionName: !GetAtt ReportWorkerFunction.Arn
+      # One property per invocation, so a slow report cannot stall a batch.
+      BatchSize: 1
+      ScalingConfig:
+        MaximumConcurrency: !Ref ReportWorkerConcurrency
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+  DeliveryQueueMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt DeliveryQueue.Arn
+      FunctionName: !GetAtt DeliveryFunction.Arn
+      BatchSize: 1
+      ScalingConfig:
+        # Serialise delivery so one job cannot send concurrent duplicate mail.
+        MaximumConcurrency: 2
+      FunctionResponseTypes:
+        - ReportBatchItemFailures
+
+  # ---------------------------------------------------------------------------
+  # HTTPS entry point for the Vercel frontend. Authentication is enforced in
+  # the handler with a signed service token, so IAM signing is not required.
+  # ---------------------------------------------------------------------------
+  DispatchFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !GetAtt DispatchFunction.Arn
+      AuthType: NONE
+      Cors:
+        AllowOrigins:
+          - https://australian-property.vercel.app
+        AllowMethods: [POST]
+        AllowHeaders: [content-type, x-parcel-atlas-token]
+        MaxAge: 300
+
+  DispatchUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DispatchFunction.Arn
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  # ---------------------------------------------------------------------------
+  # Alarms so a silent dead-letter build-up is noticed.
+  # ---------------------------------------------------------------------------
+  ReportDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ResourcePrefix}-report-dlq-not-empty"
+      AlarmDescription: A property report failed repeatedly and needs review.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt ReportDlq.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  DeliveryDlqAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ResourcePrefix}-delivery-dlq-not-empty"
+      AlarmDescription: A report email failed repeatedly and needs review.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt DeliveryDlq.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  DispatchUrl:
+    Description: Set this as AWS_DISPATCH_URL in Vercel.
+    Value: !GetAtt DispatchFunctionUrl.FunctionUrl
+  ArtifactBucketName:
+    Value: !Ref ArtifactBucket
+  ReportQueueUrl:
+    Value: !Ref ReportQueue
+  DeliveryQueueUrl:
+    Value: !Ref DeliveryQueue
+  PipelineSecretArn:
+    Description: Populate this secret before invoking the pipeline.
+    Value: !Ref PipelineSecret
