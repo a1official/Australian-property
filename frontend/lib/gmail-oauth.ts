@@ -13,6 +13,10 @@ import { createHash, randomBytes, createHmac, timingSafeEqual } from "node:crypt
 import { runtimeEnv } from "./runtime-env";
 
 export const GMAIL_SCOPES = [
+  // Basic identity gives us a reliable, non-mailbox fallback for displaying
+  // and storing the connected account after OAuth completes.
+  "openid",
+  "email",
   // Read message/attachment content and mark a processed message handled.
   "https://www.googleapis.com/auth/gmail.modify",
   // Send the report reply.
@@ -248,6 +252,23 @@ export async function fetchProfileEmail(accessToken: string, fetchImpl: FetchLik
     signal: AbortSignal.timeout(15_000),
   });
   const payload = (await response.json().catch(() => null)) as { emailAddress?: string } | null;
-  if (!response.ok || !payload?.emailAddress) throw new Error("Gmail did not return the connected mailbox address.");
-  return payload.emailAddress;
+  if (response.ok && payload?.emailAddress) return payload.emailAddress;
+
+  // The profile endpoint can be temporarily unavailable even though OAuth
+  // itself succeeded. With the minimal `openid email` scopes above, Google's
+  // standards-based user-info endpoint lets us persist the same account
+  // identity without broadening mailbox access.
+  const userInfoResponse = await fetchImpl("https://openidconnect.googleapis.com/v1/userinfo", {
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    cache: "no-store",
+    signal: AbortSignal.timeout(15_000),
+  });
+  const userInfo = (await userInfoResponse.json().catch(() => null)) as { email?: string; email_verified?: boolean } | null;
+  if (userInfoResponse.ok && userInfo?.email) return userInfo.email;
+
+  // Preserve no Google response content: it can contain account-specific
+  // information. Statuses are sufficient for private operational logs.
+  throw new Error(
+    `Google did not return the connected mailbox address (Gmail profile ${response.status}; user info ${userInfoResponse.status}).`,
+  );
 }

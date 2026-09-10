@@ -168,12 +168,12 @@ export async function generatePropertyReport(
   const timeoutMs = options.timeoutMs ?? 120_000;
   const base = options.baseUrl.replace(/\/$/, "");
 
-  const profile = await requestJson<unknown>(`${base}/api/corelogic/properties/${params.propertyId}`, {
+  const profile = await requestJson<unknown>(`${base}/api/corelogic/properties/${params.propertyId}?address=${encodeURIComponent(params.address)}`, {
     fetchImpl,
     timeoutMs,
   });
   const comparables = await requestJson<unknown>(
-    `${base}/api/corelogic/properties/${params.propertyId}/comparables`,
+    `${base}/api/corelogic/properties/${params.propertyId}/comparables?address=${encodeURIComponent(params.address)}`,
     { fetchImpl, timeoutMs },
   );
 
@@ -200,12 +200,12 @@ export async function generatePropertyPdf(
   const timeoutMs = options.timeoutMs ?? 120_000;
   const base = options.baseUrl.replace(/\/$/, "");
 
-  const profile = await requestJson<unknown>(`${base}/api/corelogic/properties/${params.propertyId}`, {
+  const profile = await requestJson<unknown>(`${base}/api/corelogic/properties/${params.propertyId}?address=${encodeURIComponent(params.address)}`, {
     fetchImpl,
     timeoutMs,
   });
   const comparables = await requestJson<unknown>(
-    `${base}/api/corelogic/properties/${params.propertyId}/comparables`,
+    `${base}/api/corelogic/properties/${params.propertyId}/comparables?address=${encodeURIComponent(params.address)}`,
     { fetchImpl, timeoutMs },
   );
 

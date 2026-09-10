@@ -13,6 +13,7 @@ import {
   buildAuthorizationUrl,
   createOAuthState,
   exchangeCodeForTokens,
+  fetchProfileEmail,
   pkceChallenge,
   readOAuthClientConfig,
   refreshAccessToken,
@@ -42,8 +43,10 @@ test("configuration requires all three OAuth values", () => {
   assert.equal(config.clientId, CONFIG.clientId);
 });
 
-test("only the two required Gmail scopes are requested", () => {
+test("the minimal Gmail and identity scopes are requested", () => {
   assert.deepEqual(GMAIL_SCOPES, [
+    "openid",
+    "email",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.send",
   ]);
@@ -138,6 +141,18 @@ test("a re-consent without a refresh token yields null, not a failure", async ()
   });
   assert.equal(tokens.refreshToken, null);
   assert.equal(tokens.accessToken, "access-token");
+});
+
+test("user-info email is used when the Gmail profile response is unavailable", async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    return calls === 1
+      ? new Response(JSON.stringify({ error: { status: "UNAVAILABLE" } }), { status: 503 })
+      : new Response(JSON.stringify({ email: "owner@example.com", email_verified: true }), { status: 200 });
+  }) as unknown as typeof fetch;
+
+  assert.equal(await fetchProfileEmail("access-token", fetchImpl), "owner@example.com");
 });
 
 test("invalid_grant becomes needs_reauthorization", async () => {

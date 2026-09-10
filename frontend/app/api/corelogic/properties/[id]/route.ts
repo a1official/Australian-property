@@ -1,4 +1,5 @@
 import { corelogicRequest } from "@/lib/corelogic";
+import { loadSearchReference, referenceModules } from "@/lib/search-reference";
 
 export const maxDuration = 120;
 
@@ -27,7 +28,7 @@ const modules = {
 
 type ModuleName = keyof typeof modules;
 const moduleScopes: Record<string, ModuleName[]> = {
-  overview: ["core", "additional", "location", "lastSale", "forSale", "forRent", "avm", "rentalAvm", "images"],
+  overview: ["core", "additional", "location", "forRent", "rentalAvm", "images"],
   market: ["lastSale", "sales", "forSale", "forRent", "onMarketSales", "onMarketRent"],
   legal: ["legal", "contacts", "occupancy", "developmentApplications", "site"],
   intelligence: ["features", "sales", "onMarketSales", "onMarketRent", "statistics", "site"],
@@ -45,8 +46,14 @@ export async function GET(request: Request, context: RouteContext<"/api/corelogi
     const selectedModules = moduleScopes[scope];
     if (!selectedModules) return Response.json({ detail: "Invalid property-data scope." }, { status: 400 });
 
+    const usesReference = selectedModules.some(name => ["core", "additional", "location", "images"].includes(name));
+    const searchModules = usesReference ? referenceModules(await loadSearchReference(id, new URL(request.url).searchParams.get("address") || "")) : null;
     const entries = await Promise.all(
-      selectedModules.map(async (name) => [name, await corelogicRequest(modules[name](id))] as const),
+      selectedModules.map(async (name) => [name,
+        searchModules && name in searchModules
+          ? searchModules[name as keyof typeof searchModules]
+          : await corelogicRequest(modules[name](id))
+      ] as const),
     );
     const data = Object.fromEntries(entries);
     const successfulModules = entries.filter(([, result]) => result.ok).length;

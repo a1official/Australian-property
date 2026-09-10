@@ -126,14 +126,24 @@ async function accessToken() {
   return tokenPromise;
 }
 
-async function requestUpstream(path: string, expiresAt: number): Promise<Omit<CoreLogicResult, "cacheStatus">> {
+async function requestUpstream(
+  path: string,
+  expiresAt: number,
+  request: { method: "GET" | "POST"; body?: unknown },
+): Promise<Omit<CoreLogicResult, "cacheStatus">> {
   const { baseUrl } = configuration();
   const cachedAt = new Date().toISOString();
   try {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const token = await accessToken();
       const response = await queueCotalityRequest(() => fetch(`${baseUrl}${path}`, {
-        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        method: request.method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+          ...(request.body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        body: request.body === undefined ? undefined : JSON.stringify(request.body),
         cache: "no-store",
         signal: AbortSignal.timeout(12_000),
       }));
@@ -174,23 +184,37 @@ async function requestUpstream(path: string, expiresAt: number): Promise<Omit<Co
   }
 }
 
-export async function corelogicRequest(path: string, options: RequestOptions = {}): Promise<CoreLogicResult> {
+async function corelogicJsonRequest(
+  path: string,
+  request: { method: "GET" | "POST"; body?: unknown },
+  options: RequestOptions = {},
+): Promise<CoreLogicResult> {
   const ttlSeconds = Math.max(15, Math.min(options.ttlSeconds ?? 300, 3_600));
   const now = Date.now();
-  const existing = requestCache.get(path);
+  const cacheKey = `${request.method} ${path}${request.body === undefined ? "" : ` ${JSON.stringify(request.body)}`}`;
+  const existing = requestCache.get(cacheKey);
   if (!options.bypassCache && existing && existing.expiresAt > now) {
     const cached = await existing.promise;
     if (cached.ok) return { ...cached, cacheStatus: "HIT" };
-    requestCache.delete(path);
+    requestCache.delete(cacheKey);
   }
 
   const expiresAt = now + ttlSeconds * 1_000;
-  const promise = requestUpstream(path, expiresAt);
-  requestCache.set(path, { expiresAt, promise });
+  const promise = requestUpstream(path, expiresAt, request);
+  requestCache.set(cacheKey, { expiresAt, promise });
   const result = await promise;
 
   // Cache only successful responses. Rate limits and entitlement failures must
   // be allowed to recover on the next request instead of being pinned for TTL.
-  if (!result.ok) requestCache.delete(path);
+  if (!result.ok) requestCache.delete(cacheKey);
   return { ...result, cacheStatus: "MISS" };
+}
+
+export function corelogicRequest(path: string, options: RequestOptions = {}): Promise<CoreLogicResult> {
+  return corelogicJsonRequest(path, { method: "GET" }, options);
+}
+
+/** A JSON POST through the same credential, throttling and cache safeguards as GET requests. */
+export function corelogicPost(path: string, body: unknown, options: RequestOptions = {}): Promise<CoreLogicResult> {
+  return corelogicJsonRequest(path, { method: "POST", body }, options);
 }

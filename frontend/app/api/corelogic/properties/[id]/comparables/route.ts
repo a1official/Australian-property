@@ -1,67 +1,36 @@
-import { corelogicRequest } from "@/lib/corelogic";
+import { corelogicPost } from "@/lib/corelogic";
+import { selectQualityComparableRents } from "@/lib/report-html";
+import { loadSearchReference, loadSearchSummary, referenceModules } from '@/lib/search-reference';
 
 export const maxDuration = 120;
 
 type JsonRecord = Record<string, unknown>;
+type Coordinate = { latitude: number; longitude: number };
 
 function record(value: unknown): JsonRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonRecord) : {};
+  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
 }
 
 function number(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
-  return null;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : typeof value === "string" && value.trim() && Number.isFinite(Number(value))
+      ? Number(value)
+      : null;
 }
 
 function string(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
-function findValue(value: unknown, keys: string[]): unknown {
-  const wanted = new Set(keys.map((key) => key.toLowerCase()));
-  const queue: unknown[] = [value];
-  while (queue.length) {
-    const item = queue.shift();
-    if (!item || typeof item !== "object") continue;
-    for (const [key, child] of Object.entries(item as JsonRecord)) {
-      if (wanted.has(key.toLowerCase()) && child !== null && child !== undefined) return child;
-      if (child && typeof child === "object") queue.push(child);
-    }
-  }
-  return null;
+function coordinate(value: unknown): Coordinate | null {
+  const source = record(value);
+  const latitude = number(source.latitude);
+  const longitude = number(source.longitude);
+  return latitude === null || longitude === null ? null : { latitude, longitude };
 }
 
-function candidateRecords(value: unknown): JsonRecord[] {
-  const seen = new Set<number>();
-  const output: JsonRecord[] = [];
-  const queue: unknown[] = [value];
-  while (queue.length) {
-    const item = queue.shift();
-    if (!item || typeof item !== "object") continue;
-    if (Array.isArray(item)) {
-      queue.push(...item);
-      continue;
-    }
-    const itemRecord = item as JsonRecord;
-    const id = number(itemRecord.id ?? itemRecord.propertyId);
-    const address = findValue(itemRecord, ["singleLine", "address", "displayAddress"]);
-    if (id && id > 0 && (address || itemRecord.attributes || itemRecord.propertyType) && !seen.has(id)) {
-      seen.add(id);
-      output.push(itemRecord);
-    }
-    queue.push(...Object.values(itemRecord));
-  }
-  return output;
-}
-
-function coordinates(value: unknown) {
-  const latitude = number(findValue(value, ["latitude", "lat"]));
-  const longitude = number(findValue(value, ["longitude", "lng", "lon"]));
-  return latitude !== null && longitude !== null ? { latitude, longitude } : null;
-}
-
-function haversineKm(first: { latitude: number; longitude: number }, second: { latitude: number; longitude: number }) {
+function haversineKm(first: Coordinate, second: Coordinate): number {
   const radians = (degrees: number) => (degrees * Math.PI) / 180;
   const latitudeDelta = radians(second.latitude - first.latitude);
   const longitudeDelta = radians(second.longitude - first.longitude);
@@ -76,122 +45,147 @@ function scoreDifference(reference: number | null, candidate: number | null, exa
 }
 
 function scoreCandidate(reference: JsonRecord, candidate: JsonRecord) {
-  const typeMatch = string(reference.propertyType)?.toUpperCase() === string(candidate.propertyType)?.toUpperCase();
-  const type = typeMatch ? 35 : 0;
+  const referenceType = string(reference.propertyType)?.toUpperCase();
+  const candidateType = string(candidate.propertyType)?.toUpperCase();
+  const type = referenceType && candidateType && referenceType === candidateType ? 35 : 0;
   const bedrooms = scoreDifference(number(reference.beds), number(candidate.beds), 20, 10);
   const bathrooms = scoreDifference(number(reference.baths), number(candidate.baths), 15, 7);
   const cars = scoreDifference(number(reference.carSpaces), number(candidate.carSpaces), 10, 5);
-  const referenceArea = number(reference.floorArea) ?? number(reference.landArea);
-  const candidateArea = number(candidate.floorArea) ?? number(candidate.landArea);
+  const bothFloor = number(reference.floorArea) !== null && number(candidate.floorArea) !== null;
+  const referenceArea = number(bothFloor ? reference.floorArea : reference.landArea);
+  const candidateArea = number(bothFloor ? candidate.floorArea : candidate.landArea);
   const area = referenceArea !== null && candidateArea !== null && referenceArea > 0 && Math.abs(referenceArea - candidateArea) / referenceArea <= 0.25 ? 10 : 0;
   const distanceKm = number(candidate.distanceKm);
-  const locality = reference.localityId === candidate.localityId;
-  const location = distanceKm === null ? (locality ? 5 : 0) : distanceKm <= 0.5 ? 10 : distanceKm <= 1 ? 8 : distanceKm <= 3 ? 6 : distanceKm <= 5 ? 4 : 0;
+  const location = distanceKm === null ? 0 : distanceKm <= 0.5 ? 10 : distanceKm <= 1 ? 8 : distanceKm <= 3 ? 6 : distanceKm <= 5 ? 4 : 0;
   return { total: type + bedrooms + bathrooms + cars + area + location, breakdown: { type, bedrooms, bathrooms, cars, area, location } };
 }
 
-async function referenceCoordinates(propertyId: string, location: JsonRecord) {
-  const direct = coordinates(location);
-  if (direct) return direct;
-  const streetId = number(record(location.street).id) ?? number(findValue(location, ["streetId"]));
-  if (!streetId) return null;
-  const firstPage = await corelogicRequest(`/search/au/property/street/${streetId}?page=0`, { ttlSeconds: 600 });
-  if (!firstPage.ok) return null;
-  const pages = Math.min(Math.max(1, number(record(record(firstPage.data).page).totalPages) ?? 1), 25);
-  for (let page = 0; page < pages; page += 1) {
-    const result = page === 0 ? firstPage : await corelogicRequest(`/search/au/property/street/${streetId}?page=${page}`, { ttlSeconds: 600 });
-    if (!result.ok) continue;
-    const matching = candidateRecords(result.data).find((item) => number(item.id ?? item.propertyId) === Number(propertyId));
-    if (matching) return coordinates(matching);
-  }
-  return null;
+function weeklyRent(campaign: JsonRecord): number | null {
+  const value = number(campaign.price);
+  const period = string(campaign.period)?.toUpperCase() || "";
+  return value !== null && (period === "W" || period.includes("WEEK")) ? value : null;
 }
 
-async function buildComparables(context: RouteContext<"/api/corelogic/properties/[id]/comparables">) {
+function candidatesFromComparables(payload: unknown, referenceCoordinate: Coordinate | null, reference: JsonRecord) {
+  const seen = new Set<number>();
+  const output: JsonRecord[] = [];
+  const summaries = record(payload).comparablesSummaryList;
+  if (!Array.isArray(summaries)) return output;
+
+  for (const summary of summaries) {
+    const properties = record(summary).propertyComparableList;
+    if (!Array.isArray(properties)) continue;
+    for (const item of properties) {
+      const source = record(item);
+      const property = record(source.property);
+      const propertyId = number(property.id);
+      if (propertyId === null || propertyId <= 0 || propertyId === reference.propertyId || seen.has(propertyId)) continue;
+      seen.add(propertyId);
+      const attributes = record(property.attributes);
+      const campaign = record(source.comparableForRentPropertyCampaign);
+      const candidateCoordinate = coordinate(property.coordinate);
+      const apiDistance = number(source.distanceFromTarget);
+      const distanceKm = referenceCoordinate && candidateCoordinate
+        ? haversineKm(referenceCoordinate, candidateCoordinate)
+        : apiDistance;
+      const photos = property.propertyPhotoList;
+      const defaultPhoto = Array.isArray(photos)
+        ? record(photos.find((photo) => record(photo).isDefaultPhoto === true) ?? photos[0])
+        : {};
+      const candidate = {
+        propertyId,
+        address: string(record(property.address).singleLine) ?? `Property ${propertyId}`,
+        imageUrl: string(defaultPhoto.largePhotoUrl ?? defaultPhoto.mediumPhotoUrl ?? defaultPhoto.thumbnailPhotoUrl),
+        campaign: string(campaign.priceDescription),
+        weeklyRent: weeklyRent(campaign),
+        rentPeriod: string(campaign.period),
+        rentDescription: string(campaign.priceDescription),
+        propertyType: string(property.propertyType),
+        beds: number(attributes.bedrooms),
+        baths: number(attributes.bathrooms),
+        carSpaces: number(attributes.carSpaces ?? attributes.lockUpGarages),
+        floorArea: number(attributes.floorArea),
+        landArea: number(attributes.landArea),
+        localityId: number(record(record(record(property.address).street).locality).id),
+        distanceKm,
+      };
+      output.push({ ...candidate, score: scoreCandidate(reference, candidate) });
+    }
+  }
+  return output.sort((left, right) => Number(record(right.score).total) - Number(record(left.score).total) || (number(left.distanceKm) ?? Infinity) - (number(right.distanceKm) ?? Infinity));
+}
+
+async function enrichSelectedCandidateImages(candidates: JsonRecord[]) {
+  // The PDF applies this same selector, so only properties that can appear in
+  // the report receive an image lookup. This prevents an unbounded N+1 burst.
+  const selectedIds = new Set(
+    selectQualityComparableRents(candidates).selected
+      .map((candidate) => number(candidate.propertyId))
+      .filter((propertyId): propertyId is number => propertyId !== null),
+  );
+  const queue = candidates.filter((candidate) => selectedIds.has(number(candidate.propertyId) ?? -1));
+  const imageByPropertyId = new Map<number, string>();
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < queue.length) {
+      const candidate = queue[cursor++];
+      const propertyId = number(candidate.propertyId);
+      const address = string(candidate.address);
+      if (propertyId === null || !address) continue;
+      try {
+        const summary = await loadSearchSummary(String(propertyId), address);
+        const photo = record(summary.propertyPhoto);
+        const imageUrl = string(photo.largePhotoUrl ?? photo.mediumPhotoUrl ?? photo.thumbnailPhotoUrl);
+        if (imageUrl) imageByPropertyId.set(propertyId, imageUrl);
+      } catch {
+        // A missing photo or a transient enrichment failure must not discard a
+        // valid rental comparable; the PDF keeps its existing placeholder.
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(3, queue.length) }, () => worker()));
+  return candidates.map((candidate) => {
+    const imageUrl = imageByPropertyId.get(number(candidate.propertyId) ?? -1);
+    return imageUrl ? { ...candidate, imageUrl } : candidate;
+  });
+}
+
+async function buildComparables(request: Request, context: RouteContext<"/api/corelogic/properties/[id]/comparables">) {
   const { id } = await context.params;
-  if (!/^\d{1,14}$/.test(id)) return Response.json({ detail: "Invalid CoreLogic property identifier." }, { status: 400 });
+  if (!/^\d{1,14}$/.test(id)) return Response.json({ detail: "Invalid Cotality property identifier." }, { status: 400 });
 
-  const [coreResponse, additionalResponse, locationResponse] = await Promise.all([
-    corelogicRequest(`/property-details/au/properties/${id}/attributes/core`, { ttlSeconds: 300 }),
-    corelogicRequest(`/property-details/au/properties/${id}/attributes/additional`, { ttlSeconds: 300 }),
-    corelogicRequest(`/property-details/au/properties/${id}/location`, { ttlSeconds: 300 }),
-  ]);
-  if (!coreResponse.ok || !locationResponse.ok) {
-    return Response.json({ detail: "The reference property could not be loaded for comparison." }, { status: 502 });
-  }
+  const summary = await loadSearchReference(id, new URL(request.url).searchParams.get('address') || '');
+  const modules = referenceModules(summary);
+  const reference = { propertyId: Number(id), ...modules.core.data, ...modules.additional.data, localityId: modules.location.data.locality.id };
 
-  const core = record(coreResponse.data);
-  const additional = record(additionalResponse.data);
-  const location = record(locationResponse.data);
-  const localityId = number(record(location.locality).id) ?? number(findValue(location, ["localityId"]));
-  if (!localityId) return Response.json({ detail: "Cotality did not return a locality identifier for this property." }, { status: 404 });
+  // Rule 3 is Cotality's rental-listing comparables rule. We deliberately omit
+  // targetPropertyValuation: no sale valuation is fabricated for a rent review.
+  const comparablesResponse = await corelogicPost("/property/au/v1/property/comparables.json", {
+    propertyId: Number(id),
+    comparablesRuleId: 3,
+    returnDetailForComparableCategoryId: ["1", "2", "3", "4", "5"],
+    returnStatisticsForComparableCategoryId: ["1", "2", "3", "4", "5"],
+    limit: 24,
+    returnFields: ["address", "attributes"],
+  }, { ttlSeconds: 300 });
+  if (!comparablesResponse.ok) return Response.json({ detail: "Cotality rental comparables could not be loaded.", upstreamStatus: comparablesResponse.status }, { status: 502 });
 
-  const referenceCoordinate = await referenceCoordinates(id, location);
-  const [saleResponse, rentResponse] = await Promise.all([
-    corelogicRequest(`/search/au/property/locality/${localityId}/otmForSale`, { ttlSeconds: 300 }),
-    corelogicRequest(`/search/au/property/locality/${localityId}/otmForRent`, { ttlSeconds: 300 }),
-  ]);
-  const candidateById = new Map<number, JsonRecord>();
-  // Rental candidates are added first so rent-bearing matches are preferred when
-  // otherwise-identical summary scores tie. A sale record may supplement it.
-  for (const item of [...(rentResponse.ok ? candidateRecords(rentResponse.data) : []), ...(saleResponse.ok ? candidateRecords(saleResponse.data) : [])]) {
-    const candidateId = number(item.id ?? item.propertyId);
-    if (candidateId === null || candidateId === Number(id)) continue;
-    candidateById.set(candidateId, { ...item, ...(candidateById.get(candidateId) || {}) });
-  }
-  const sourceCandidates = Array.from(candidateById.values()).slice(0, 50);
+  // The service provides its own distance; Haversine is available when a
+  // reference coordinate becomes available from a permitted source.
+  const referenceCoordinate = coordinate(summary.coordinate);
+  const candidates = await enrichSelectedCandidateImages(
+    candidatesFromComparables(comparablesResponse.data, referenceCoordinate, reference),
+  );
+  const summaries: unknown[] = Array.isArray(record(comparablesResponse.data).comparablesSummaryList)
+    ? record(comparablesResponse.data).comparablesSummaryList as unknown[]
+    : [];
+  const totalCandidates = summaries.reduce<number>((total, summary) => total + (number(record(summary).totalProperties) ?? 0), 0);
 
-  const reference = {
-    propertyType: string(core.propertyType), beds: number(core.beds), baths: number(core.baths), carSpaces: number(core.carSpaces),
-    floorArea: number(additional.floorArea), landArea: number(core.landArea), localityId,
-  };
-  const preselected = sourceCandidates
-    .map((item) => {
-      const attributes = record(item.attributes);
-      const candidate = { propertyType: string(item.propertyType ?? attributes.propertyType), beds: number(attributes.beds ?? attributes.bedrooms ?? item.beds ?? item.bedrooms), baths: number(attributes.baths ?? attributes.bathrooms ?? item.baths ?? item.bathrooms), carSpaces: number(attributes.carSpaces ?? item.carSpaces), floorArea: number(attributes.floorArea), landArea: number(attributes.landArea ?? item.landArea), localityId, distanceKm: null };
-      return { item, candidate, score: scoreCandidate(reference, candidate).total };
-    })
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 12);
-
-  const enriched = await Promise.all(preselected.map(async ({ item }) => {
-    const candidateId = number(item.id ?? item.propertyId)!;
-    const [candidateCoreResponse, candidateAdditionalResponse, candidateLocationResponse] = await Promise.all([
-      corelogicRequest(`/property-details/au/properties/${candidateId}/attributes/core`, { ttlSeconds: 300 }),
-      corelogicRequest(`/property-details/au/properties/${candidateId}/attributes/additional`, { ttlSeconds: 300 }),
-      corelogicRequest(`/property-details/au/properties/${candidateId}/location`, { ttlSeconds: 300 }),
-    ]);
-    const candidateCore = record(candidateCoreResponse.data);
-    const candidateAdditional = record(candidateAdditionalResponse.data);
-    const candidateLocation = record(candidateLocationResponse.data);
-    const candidateCoordinate = coordinates(candidateLocation) ?? coordinates(item);
-    const distanceKm = referenceCoordinate && candidateCoordinate ? haversineKm(referenceCoordinate, candidateCoordinate) : null;
-    const candidate = {
-      propertyType: string(candidateCore.propertyType) ?? string(item.propertyType), beds: number(candidateCore.beds), baths: number(candidateCore.baths), carSpaces: number(candidateCore.carSpaces),
-      floorArea: number(candidateAdditional.floorArea), landArea: number(candidateCore.landArea), localityId: number(record(candidateLocation.locality).id) ?? number(findValue(candidateLocation, ["localityId"])) ?? localityId, distanceKm,
-    };
-    const score = scoreCandidate(reference, candidate);
-    const image = record(item.propertyPhoto);
-    const rentalCampaign = record(item.otmForRentDetail);
-    const weeklyRent = number(rentalCampaign.price);
-    const rentPeriod = string(rentalCampaign.period) ?? "W";
-    return {
-      propertyId: candidateId,
-      address: string(findValue(candidateLocation, ["singleLine", "displayAddress"])) ?? string(findValue(item, ["singleLine", "displayAddress", "address"])) ?? `Property ${candidateId}`,
-      imageUrl: string(image.largePhotoUrl ?? image.mediumPhotoUrl ?? image.thumbnailPhotoUrl),
-      campaign: string(findValue(item, ["priceDescription", "advertisedPrice", "displayPrice"])),
-      weeklyRent: weeklyRent !== null && rentPeriod === "W" ? weeklyRent : null,
-      rentPeriod,
-      rentDescription: string(rentalCampaign.priceDescription),
-      ...candidate,
-      score,
-    };
-  }));
-
-  const candidates = enriched.sort((left, right) => right.score.total - left.score.total || (left.distanceKm ?? Infinity) - (right.distanceKm ?? Infinity));
   return Response.json({
-    reference: { propertyId: Number(id), coordinateAvailable: Boolean(referenceCoordinate), ...reference },
-    candidatePool: { localityId, forSale: saleResponse.ok, forRent: rentResponse.ok, discovered: sourceCandidates.length, enriched: candidates.length },
+    reference: { ...reference, coordinateAvailable: Boolean(referenceCoordinate) },
+    candidatePool: { source: "Cotality rental comparables Rule 3", discovered: totalCandidates, returned: candidates.length },
     candidates,
     cache: { ttlSeconds: 300 },
   }, { headers: { "Cache-Control": "private, max-age=60, stale-while-revalidate=300" } });
@@ -199,7 +193,7 @@ async function buildComparables(context: RouteContext<"/api/corelogic/properties
 
 export async function GET(_request: Request, context: RouteContext<"/api/corelogic/properties/[id]/comparables">) {
   try {
-    return await buildComparables(context);
+    return await buildComparables(_request, context);
   } catch (error) {
     return Response.json({ detail: error instanceof Error ? error.message : "Comparable data could not be loaded." }, { status: 500 });
   }

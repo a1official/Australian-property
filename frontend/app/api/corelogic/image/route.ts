@@ -1,5 +1,12 @@
+import sharp from "sharp";
+
 const ALLOWED_HOSTS = new Set(["images.corelogic.asia", "images-uat.corelogic.asia"]);
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+
+// PDFKit natively embeds JPEG and PNG, but a portion of Cotality's listing
+// photography is WebP. Keep the conversion on the server-side image proxy so
+// reports and browser views both receive a PDF-compatible image.
+export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   const source = new URL(request.url).searchParams.get("src");
@@ -28,13 +35,21 @@ export async function GET(request: Request) {
       return Response.json({ detail: "Cotality image could not be retrieved." }, { status: 502 });
     }
 
-    const image = await response.arrayBuffer();
+    let image = Buffer.from(await response.arrayBuffer());
+    let imageType = contentType.split(";")[0].toLowerCase();
+    if (image.byteLength > MAX_IMAGE_BYTES) {
+      return Response.json({ detail: "Cotality image is too large to embed." }, { status: 413 });
+    }
+    if (imageType === "image/webp") {
+      image = await sharp(image).jpeg({ quality: 88, mozjpeg: true }).toBuffer();
+      imageType = "image/jpeg";
+    }
     if (image.byteLength > MAX_IMAGE_BYTES) {
       return Response.json({ detail: "Cotality image is too large to embed." }, { status: 413 });
     }
     return new Response(image, {
       headers: {
-        "Content-Type": contentType,
+        "Content-Type": imageType,
         "Cache-Control": "private, max-age=300",
       },
     });
