@@ -169,16 +169,16 @@ function recordMailboxCheck(foundMail: boolean): void {
 // Stage 1 — inbox discovery
 // ---------------------------------------------------------------------------
 
-async function discoverAndRegister(): Promise<number> {
+async function discoverAndRegister(): Promise<string[]> {
   if (!config.allowedSenders.length && !config.allowAnySender) {
     log.error("intake.blocked", { reason: "Configure GMAIL_ALLOWED_SENDERS or explicitly set GMAIL_ALLOW_ANY_SENDER=true" });
-    return 0;
+    return [];
   }
 
   // OAuth mailbox API only: no browser, cookie or password in this path.
   const mailbox = await getMailbox();
 
-  let registered = 0;
+  const registered: string[] = [];
   try {
     const discovered = config.mailboxProvider === "outlook"
       ? await discoverOutlookCsvAttachments(mailbox as OutlookGraphClient, { maxMessages: config.maxEmails, logger: log })
@@ -261,7 +261,7 @@ async function discoverAndRegister(): Promise<number> {
         })),
       );
       itemLog.info("intake.registered", { jobId: job.id, rows: validated.addresses.length });
-      registered += 1;
+      registered.push(job.id);
     }
   } catch (error) {
     // A revoked grant needs a human, so drop the cached client and let the
@@ -271,6 +271,22 @@ async function discoverAndRegister(): Promise<number> {
   }
 
   return registered;
+}
+
+/**
+ * Lambda dispatch entry point: scan Gmail and persist new jobs, but never
+ * render PDFs or send mail in the short dispatch invocation. The caller fans
+ * the returned job ids out to SQS.
+ */
+export async function discoverMailboxJobsOnce(): Promise<string[]> {
+  assertEncryptionKeyConfigured();
+  await initSchema();
+  try {
+    return await discoverAndRegister();
+  } finally {
+    mailboxClient = null;
+    await closePool();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -496,9 +512,9 @@ async function runCycle(): Promise<{ didWork: boolean }> {
   await recordHeartbeat({ workerId: WORKER_ID, status: "crawling", cycles, detail: "Checking mailbox" });
   try {
     const registered = await discoverAndRegister();
-    recordMailboxCheck(registered > 0);
-    if (registered) {
-      log.info("cycle.registered", { registered });
+    recordMailboxCheck(registered.length > 0);
+    if (registered.length) {
+      log.info("cycle.registered", { registered: registered.length });
       didWork = true;
     }
   } catch (error) {

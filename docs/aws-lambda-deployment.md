@@ -16,6 +16,46 @@ The resulting system must:
 - prevent duplicate processing and duplicate outgoing emails;
 - protect Cotality from bursts, retries, and concurrent overuse.
 
+## Migration status — 11 September 2026
+
+The CloudFormation stack, S3 bucket, queues/DLQs, three Lambda functions and
+runtime secret are live in `ap-southeast-2`. The dispatcher and report-worker
+were smoke-tested directly: the dispatcher authenticated to Gmail and found no
+new CSV; the report worker accepted an empty SQS batch successfully.
+
+The Vercel source is prepared to invoke the dispatcher through the AWS SDK,
+but production must not be switched until a dedicated invoke-only IAM access
+key is created. The current deployment IAM user is intentionally denied
+`iam:CreateUser`, `iam:PutUserPolicy`, and `iam:CreateAccessKey`, so it cannot
+safely create that credential itself.
+
+An AWS administrator should create `parcel-atlas-vercel-dispatch` with this
+**inline policy only** (replace the account only if deploying elsewhere):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": "lambda:InvokeFunction",
+    "Resource": "arn:aws:lambda:ap-southeast-2:716314429284:function:parcel-atlas-dispatch"
+  }]
+}
+```
+
+Create one access key for that user and set these Vercel **Production** secrets:
+
+```text
+AWS_ACCESS_KEY_ID=<invoke-only user access key id>
+AWS_SECRET_ACCESS_KEY=<invoke-only user secret>
+AWS_REGION=ap-southeast-2
+AWS_LAMBDA_DISPATCH_FUNCTION=parcel-atlas-dispatch
+```
+
+Never use the broader AWS deployment-user credentials in Vercel. After these
+four values are set, deploy the Vercel source and press Auto-pilot once. The
+GitHub Actions dispatch is then no longer used by the frontend.
+
 ---
 
 ## Current business workflow

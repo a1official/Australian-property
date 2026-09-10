@@ -28,4 +28,5 @@ frontend/.env.local
 frontend/tsconfig.tsbuildinfo
 
 .vercel
+.aws-build/
 .env*

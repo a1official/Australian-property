@@ -10,6 +10,7 @@ import { del, get, head, list, put } from "@vercel/blob";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { awsArtifactPath, getAwsArtifact, putAwsArtifact } from "../lambda/aws-storage";
 
 const CSV_PREFIX = "parcel-atlas/csv";
 const REPORT_PREFIX = "parcel-atlas/reports";
@@ -75,6 +76,11 @@ export async function uploadCsvBlob(params: {
   filename: string;
   content: string | Buffer;
 }): Promise<{ pathname: string; url: string; fileHash: string }> {
+  if (process.env.ARTIFACT_BUCKET) {
+    const pathname = awsArtifactPath("csv", params.jobId, params.secret, params.filename);
+    await putAwsArtifact(pathname, params.content, "text/csv; charset=utf-8");
+    return { pathname, url: `s3://${process.env.ARTIFACT_BUCKET}/${pathname}`, fileHash: computeFileHash(params.content) };
+  }
   const token = getBlobToken();
   const pathname = csvPathname(params.jobId, params.secret, params.filename);
   const blob = await put(pathname, params.content, {
@@ -95,6 +101,13 @@ export async function uploadReportBlob(params: {
   html?: string | Buffer;
   content?: string | Buffer;
 }): Promise<{ pathname: string; url: string }> {
+  if (process.env.ARTIFACT_BUCKET) {
+    const pathname = awsArtifactPath("reports", params.jobId, params.secret, params.filename);
+    const content = params.content ?? params.html;
+    if (content === undefined) throw new Error("Report content is required.");
+    await putAwsArtifact(pathname, content, params.filename.toLowerCase().endsWith(".pdf") ? "application/pdf" : "text/html; charset=utf-8");
+    return { pathname, url: `s3://${process.env.ARTIFACT_BUCKET}/${pathname}` };
+  }
   const token = getBlobToken();
   const pathname = reportPathname(params.jobId, params.secret, params.filename);
   const content = params.content ?? params.html;
@@ -117,6 +130,7 @@ export async function downloadBlobText(pathname: string): Promise<string> {
 
 /** Downloads a report or CSV without assuming it is UTF-8 text. */
 export async function downloadBlobBuffer(pathname: string): Promise<Buffer> {
+  if (process.env.ARTIFACT_BUCKET && /^(csv|reports)\//.test(pathname)) return getAwsArtifact(pathname);
   const token = getBlobToken();
   const result = await get(pathname, { access: "private", token });
   if (!result?.stream) throw new Error(`Blob ${pathname} returned no content.`);
