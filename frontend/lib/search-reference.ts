@@ -20,13 +20,27 @@ export async function loadSearchSummary(id: string, address: string) {
   if (!matched) throw new Error('Search did not resolve the requested property ID for this address.');
   const streetId = Number(matched.streetId);
   if (!Number.isSafeInteger(streetId) || streetId <= 0) throw new Error('Search did not provide a street ID for this property.');
-  for (let page = 0; page < 25; page++) {
-    const result = await corelogicRequest('/search/au/property/street/' + streetId + '?page=' + page);
-    if (!result.ok) throw new Error('Cotality street search failed (HTTP ' + result.status + ').');
-    const summary = searchSummaries(result.data).find(item => Number(item.id) === Number(id));
-    if (summary) return summary;
-    const total = Number(record(record(result.data).page).totalPages);
-    if (!Number.isFinite(total) || page + 1 >= total) break;
+  const first = await corelogicRequest('/search/au/property/street/' + streetId + '?page=0');
+  if (!first.ok) throw new Error('Cotality street search failed (HTTP ' + first.status + ').');
+  const firstMatch = searchSummaries(first.data).find(item => Number(item.id) === Number(id));
+  if (firstMatch) return firstMatch;
+
+  // Dense unit streets can exceed the old 25-page cap. Request the remaining
+  // bounded pages in small batches: this finds a deep exact match without an
+  // unbounded scan or serially holding up the worker.
+  const totalPages = Number(record(record(first.data).page).totalPages);
+  const pageLimit = Number.isFinite(totalPages) ? Math.min(Math.floor(totalPages), 75) : 25;
+  for (let start = 1; start < pageLimit; start += 8) {
+    const pages = Array.from({ length: Math.min(8, pageLimit - start) }, (_, index) => start + index);
+    const results = await Promise.all(pages.map(async (page) => {
+      const result = await corelogicRequest('/search/au/property/street/' + streetId + '?page=' + page);
+      if (!result.ok) throw new Error('Cotality street search failed (HTTP ' + result.status + ').');
+      return result.data;
+    }));
+    for (const data of results) {
+      const summary = searchSummaries(data).find(item => Number(item.id) === Number(id));
+      if (summary) return summary;
+    }
   }
   throw new Error('The exact reference property was not found within the bounded street search.');
 }
