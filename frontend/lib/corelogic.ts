@@ -25,6 +25,56 @@ let activeRequests = 0;
 let lastRequestStartedAt = 0;
 const requestQueue: Array<() => void> = [];
 
+/**
+ * Circuit breaker.
+ *
+ * Serialising requests bounds the *rate* but not the *total*: a long scan can
+ * still grind through hundreds of calls and exhaust the sandbox quota, which is
+ * exactly what happened when a street scan was allowed 150 pages. After a few
+ * consecutive rate-limit responses, new work is refused for a cooldown instead
+ * of continuing to push a service that has already said stop.
+ */
+const CIRCUIT_FAILURE_THRESHOLD = 3;
+const CIRCUIT_COOLDOWN_MS = 60_000;
+let consecutiveRateLimits = 0;
+let circuitOpenUntil = 0;
+
+export class CotalityCircuitOpenError extends Error {
+  readonly retryable = true;
+  constructor(readonly retryAfterMs: number) {
+    super(
+      `Cotality requests are paused for ${Math.ceil(retryAfterMs / 1000)}s after repeated rate-limit responses. The work will resume automatically.`,
+    );
+    this.name = "CotalityCircuitOpenError";
+  }
+}
+
+function circuitRemainingMs(): number {
+  return Math.max(0, circuitOpenUntil - Date.now());
+}
+
+function recordRateLimit(): void {
+  consecutiveRateLimits += 1;
+  if (consecutiveRateLimits >= CIRCUIT_FAILURE_THRESHOLD) {
+    circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
+    consecutiveRateLimits = 0;
+  }
+}
+
+function recordSuccess(): void {
+  consecutiveRateLimits = 0;
+}
+
+/** Exposed so a worker can report throttling state without inspecting internals. */
+export function cotalityCircuitState(): { open: boolean; retryAfterMs: number; consecutiveRateLimits: number } {
+  return { open: circuitRemainingMs() > 0, retryAfterMs: circuitRemainingMs(), consecutiveRateLimits };
+}
+
+export function resetCotalityCircuitForTests(): void {
+  consecutiveRateLimits = 0;
+  circuitOpenUntil = 0;
+}
+
 function sleep(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -132,6 +182,11 @@ async function requestUpstream(
   const { baseUrl } = configuration();
   const cachedAt = new Date().toISOString();
   try {
+    // Refuse immediately while the breaker is open, rather than joining the
+    // queue and adding to the pressure that opened it.
+    const remaining = circuitRemainingMs();
+    if (remaining > 0) throw new CotalityCircuitOpenError(remaining);
+
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const token = await accessToken();
       const response = await queueCotalityRequest(() => fetch(`${baseUrl}${path}`, {
@@ -146,9 +201,14 @@ async function requestUpstream(
         signal: AbortSignal.timeout(12_000),
       }));
 
-      if (response.status === 429 && attempt < 2) {
-        await sleep(retryDelay(response.headers.get("retry-after"), attempt));
-        continue;
+      if (response.status === 429) {
+        recordRateLimit();
+        if (attempt < 2) {
+          await sleep(retryDelay(response.headers.get("retry-after"), attempt));
+          continue;
+        }
+      } else if (response.ok) {
+        recordSuccess();
       }
 
       const text = await response.text();

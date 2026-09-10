@@ -62,6 +62,12 @@ export type WorkerDeps = {
   heartbeat(detail: string): Promise<void>;
 };
 
+/**
+ * Per-row retry ceiling. Beyond this a row is parked for review so that one
+ * unresolvable address cannot withhold every completed report in the job.
+ */
+export const MAX_ROW_ATTEMPTS = 3;
+
 export function pendingRows(rows: PropertyReportRecord[]): PropertyReportRecord[] {
   return rows.filter((row) => row.status !== "generated" && row.status !== "needs_review" && row.status !== "unmatched");
 }
@@ -150,16 +156,17 @@ export async function processRows(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const failure = classifyFailure(error);
-      // Permanent row errors stop consuming retry budget; transient ones stay
-      // pending so only the remaining rows are retried on the next lease.
-      await deps.updateRow({
-        id: row.id,
-        status: failure === "permanent" ? "failed" : "pending",
-        error: message,
-        incrementAttempts: true,
-      });
-      rowLogger.error("row.failed", { failure, error: message });
-      failed += 1;
+      // A row that has already consumed its retry budget must stop blocking the
+      // job. Parking it as needs_review keeps it visible for a human while
+      // letting the completed reports be delivered, rather than holding every
+      // finished report hostage to one unresolvable address.
+      const exhausted = row.attempts + 1 >= MAX_ROW_ATTEMPTS;
+      const status =
+        failure === "permanent" ? "failed" : exhausted ? "needs_review" : "pending";
+      await deps.updateRow({ id: row.id, status, error: message, incrementAttempts: true });
+      rowLogger.error("row.failed", { failure, status, attempts: row.attempts + 1, error: message });
+      if (status === "needs_review") needsReview += 1;
+      else failed += 1;
       if (failure === "needs_reauthentication") throw error;
     }
   }
