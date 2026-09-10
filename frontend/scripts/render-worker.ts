@@ -52,6 +52,8 @@ import { CsvValidationError, buildIdempotencyKey, isAllowedSender, validateCsvAt
 import type { GmailApiClient } from "../lib/gmail-api";
 import { discoverCsvAttachments, openMailbox, sendReportReply } from "../lib/gmail-mailbox";
 import { NeedsReauthorizationError } from "../lib/gmail-oauth";
+import { discoverOutlookCsvAttachments, openOutlookMailbox, sendOutlookReportReply, type OutlookGraphClient } from "../lib/outlook-mailbox";
+import { OutlookNeedsReauthorizationError } from "../lib/outlook-oauth";
 import { assertEncryptionKeyConfigured } from "../lib/token-crypto";
 import { createLogger } from "../lib/logger";
 import { generatePropertyPdf, matchAddress } from "../lib/report-pipeline";
@@ -100,6 +102,7 @@ const config = {
   mailboxMaxIntervalMs: Number(process.env.WORKER_MAILBOX_MAX_INTERVAL_MS || 900_000),
   leaseSeconds: Number(process.env.WORKER_LEASE_SECONDS || 900),
   maxEmails: Number(process.env.WORKER_MAX_EMAILS || 5),
+  mailboxProvider: process.env.MAILBOX_PROVIDER === "outlook" ? "outlook" as const : "gmail" as const,
 
   allowedSenders: (process.env.GMAIL_ALLOWED_SENDERS || "")
     .split(",")
@@ -117,10 +120,12 @@ const log = createLogger({ workerId: WORKER_ID, service: "parcel-atlas-worker" }
  * One Gmail API client per cycle, shared by discovery and reply delivery.
  * The access token lives in memory only and is never persisted.
  */
-let mailboxClient: GmailApiClient | null = null;
+let mailboxClient: GmailApiClient | OutlookGraphClient | null = null;
 
-async function getMailbox(): Promise<GmailApiClient> {
-  if (!mailboxClient) mailboxClient = await openMailbox({ logger: log });
+async function getMailbox(): Promise<GmailApiClient | OutlookGraphClient> {
+  if (!mailboxClient) mailboxClient = config.mailboxProvider === "outlook"
+    ? await openOutlookMailbox({ logger: log })
+    : await openMailbox({ logger: log });
   return mailboxClient;
 }
 
@@ -170,12 +175,14 @@ async function discoverAndRegister(): Promise<number> {
     return 0;
   }
 
-  // Gmail API over OAuth: no browser, cookie or password in this path.
+  // OAuth mailbox API only: no browser, cookie or password in this path.
   const mailbox = await getMailbox();
 
   let registered = 0;
   try {
-    const discovered = await discoverCsvAttachments(mailbox, { maxMessages: config.maxEmails, logger: log });
+    const discovered = config.mailboxProvider === "outlook"
+      ? await discoverOutlookCsvAttachments(mailbox as OutlookGraphClient, { maxMessages: config.maxEmails, logger: log })
+      : await discoverCsvAttachments(mailbox as GmailApiClient, { maxMessages: config.maxEmails, logger: log });
 
     for (const item of discovered) {
       const itemLog = log.child({ sender: item.sender, fileName: item.filename, messageId: item.messageId });
@@ -259,7 +266,7 @@ async function discoverAndRegister(): Promise<number> {
   } catch (error) {
     // A revoked grant needs a human, so drop the cached client and let the
     // caller stop the cycle rather than retrying.
-    if (error instanceof NeedsReauthorizationError) mailboxClient = null;
+    if (error instanceof NeedsReauthorizationError || error instanceof OutlookNeedsReauthorizationError) mailboxClient = null;
     throw error;
   }
 
@@ -282,10 +289,21 @@ function buildDeps(job: PipelineJob, blobSecret: string, jobLog: ReturnType<type
     readReport: (pathname) => downloadBlobBuffer(pathname),
     updateRow: (input) => updatePropertyRow(input),
     sendReply: async (input) => {
-      // One threaded Gmail API reply carrying every completed report.
+      // A provider-native reply for one completed property report.
       const mailbox = await getMailbox();
       try {
-        await sendReportReply(mailbox, {
+        if (config.mailboxProvider === "outlook") {
+          if (!job.message_id) throw new Error("Outlook job has no source message id.");
+          await sendOutlookReportReply(mailbox as OutlookGraphClient, {
+            sourceMessageId: job.message_id,
+            attachments: input.attachments.map((attachment) => ({ filename: attachment.name, mimeType: attachment.mimeType, content: attachment.buffer })),
+            reviewCount: input.reviewCount, logger: jobLog,
+            ownerName: input.ownerName,
+            ownerEmail: input.ownerEmail,
+          });
+          return;
+        }
+        await sendReportReply(mailbox as GmailApiClient, {
           to: input.recipient,
           subject: input.subject,
           threadId: job.thread_id ?? undefined,
@@ -309,7 +327,7 @@ function buildDeps(job: PipelineJob, blobSecret: string, jobLog: ReturnType<type
           logger: jobLog,
         });
       } catch (error) {
-        if (error instanceof NeedsReauthorizationError) mailboxClient = null;
+        if (error instanceof NeedsReauthorizationError || error instanceof OutlookNeedsReauthorizationError) mailboxClient = null;
         throw error;
       }
     },
@@ -365,6 +383,8 @@ async function processJob(job: PipelineJob): Promise<void> {
           rowNumber: address.rowNumber,
           address: address.address,
           ownerName: address.ownerName,
+          ownerEmail: address.ownerEmail,
+          currentRent: address.currentRent,
       })),
     );
     await transitionJob({ jobId: job.id, status: "downloaded", workerId: WORKER_ID, detail: `${addresses.length} address row(s)` });
@@ -439,7 +459,7 @@ async function processJob(job: PipelineJob): Promise<void> {
       error: error instanceof Error ? error.message : String(error),
     });
     await handleJobFailure(error, job.attempts, deps);
-    if (error instanceof NeedsReauthorizationError) throw error;
+    if (error instanceof NeedsReauthorizationError || error instanceof OutlookNeedsReauthorizationError) throw error;
   }
 }
 
@@ -527,12 +547,12 @@ async function main(): Promise<void> {
       // Keep draining without pausing while there is a backlog.
       if (didWork) sleepMs = 1_000;
     } catch (error) {
-      if (error instanceof NeedsReauthorizationError) {
+    if (error instanceof NeedsReauthorizationError || error instanceof OutlookNeedsReauthorizationError) {
         // A revoked grant cannot be recovered without human consent, so stop
         // this run rather than looping. The status is already recorded in Neon.
         log.error("worker.needs_reauthorization", {
           error: error.message,
-          action: "Reconnect Gmail in Parcel Atlas to restore the grant.",
+          action: `Reconnect ${config.mailboxProvider === "outlook" ? "Outlook" : "Gmail"} in Parcel Atlas to restore the grant.`,
         });
         mailboxClient = null;
         break;

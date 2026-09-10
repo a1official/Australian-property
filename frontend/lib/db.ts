@@ -284,6 +284,21 @@ const SCHEMA_STATEMENTS = [
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_used_at TIMESTAMPTZ
   )`,
+  // Outlook/Microsoft Graph uses the same encrypted-refresh-token pattern as
+  // Gmail, while keeping each provider's grant isolated.
+  `CREATE TABLE IF NOT EXISTS outlook_oauth_connections (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL DEFAULT 'microsoft',
+    email_masked TEXT NOT NULL,
+    email_hash TEXT NOT NULL,
+    refresh_token_encrypted TEXT,
+    scopes TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'connected',
+    error_code TEXT,
+    connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ
+  )`,
 ];
 
 /**
@@ -809,6 +824,55 @@ export async function getGmailConnectionSummary(id = "default") {
             (refresh_token_encrypted IS NOT NULL) AS has_token
        FROM gmail_oauth_connections WHERE id = $1 LIMIT 1`,
     [id],
+  )) as Array<Record<string, unknown>>;
+  return rows[0] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Outlook OAuth connection
+// ---------------------------------------------------------------------------
+
+export type OutlookConnectionStatus = GmailConnectionStatus;
+export interface OutlookOAuthConnection extends GmailOAuthConnection {}
+
+export async function getOutlookConnection(id = "default"): Promise<OutlookOAuthConnection | null> {
+  const { rows } = await getPool().query<OutlookOAuthConnection>(
+    "SELECT * FROM outlook_oauth_connections WHERE id = $1 LIMIT 1",
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
+export async function saveOutlookConnection(params: {
+  id?: string; emailMasked: string; emailHash: string; refreshTokenEncrypted: string | null; scopes: string;
+}): Promise<void> {
+  await getPool().query(
+    `INSERT INTO outlook_oauth_connections
+       (id, provider, email_masked, email_hash, refresh_token_encrypted, scopes, status, error_code, connected_at, updated_at)
+     VALUES ($1, 'microsoft', $2, $3, $4, $5, 'connected', NULL, NOW(), NOW())
+     ON CONFLICT (id) DO UPDATE SET
+       email_masked = EXCLUDED.email_masked, email_hash = EXCLUDED.email_hash,
+       refresh_token_encrypted = COALESCE(EXCLUDED.refresh_token_encrypted, outlook_oauth_connections.refresh_token_encrypted),
+       scopes = EXCLUDED.scopes, status = 'connected', error_code = NULL, updated_at = NOW()`,
+    [params.id ?? "default", params.emailMasked, params.emailHash, params.refreshTokenEncrypted, params.scopes],
+  );
+}
+
+export async function markOutlookConnectionStatus(status: OutlookConnectionStatus, errorCode: string | null, id = "default"): Promise<void> {
+  await getPool().query("UPDATE outlook_oauth_connections SET status = $2, error_code = $3, updated_at = NOW() WHERE id = $1", [id, status, errorCode]);
+}
+export async function touchOutlookConnection(id = "default"): Promise<void> {
+  await getPool().query("UPDATE outlook_oauth_connections SET last_used_at = NOW(), updated_at = NOW() WHERE id = $1", [id]);
+}
+export async function deleteOutlookConnection(id = "default"): Promise<void> {
+  await getPool().query("UPDATE outlook_oauth_connections SET refresh_token_encrypted = NULL, status = 'disconnected', error_code = NULL, updated_at = NOW() WHERE id = $1", [id]);
+}
+export async function getOutlookConnectionSummary(id = "default") {
+  const sql = getDb();
+  const rows = (await sql.query(
+    `SELECT email_masked, scopes, status, error_code, connected_at, updated_at, last_used_at,
+            (refresh_token_encrypted IS NOT NULL) AS has_token
+       FROM outlook_oauth_connections WHERE id = $1 LIMIT 1`, [id],
   )) as Array<Record<string, unknown>>;
   return rows[0] ?? null;
 }

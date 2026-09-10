@@ -251,6 +251,9 @@ export function BatchReports() {
     status?: string;
     needsReauthorization?: boolean;
   } | null>(null);
+  const [outlook, setOutlook] = useState<{
+    configured: boolean; connected: boolean; email: string | null; status?: string; needsReauthorization?: boolean;
+  } | null>(null);
   const [gmailBusy, setGmailBusy] = useState(false);
   const [gmailNotice, setGmailNotice] = useState("");
   const [replyTo, setReplyTo] = useState("");
@@ -319,6 +322,15 @@ export function BatchReports() {
     }
   }, []);
 
+  const fetchOutlookStatus = useCallback(async () => {
+    try {
+      const response = await fetch("/api/outlook/oauth/status", { cache: "no-store" });
+      const data = await response.json() as { configured?: boolean; connected?: boolean; email?: string | null; status?: string; needsReauthorization?: boolean };
+      const status = { configured: Boolean(data.configured), connected: Boolean(data.connected), email: data.email ?? null, status: data.status, needsReauthorization: Boolean(data.needsReauthorization) };
+      setOutlook(status); return status;
+    } catch { setOutlook(null); return null; }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     // Defer the first fetch so the effect body itself does not call setState,
@@ -326,6 +338,7 @@ export function BatchReports() {
     const bootstrap = setTimeout(() => {
       if (cancelled) return;
       void fetchGmailStatus();
+      void fetchOutlookStatus();
       void fetchJobs();
       void fetchWorkerHealth();
       // Disable the mailbox CTA up front if this deployment cannot dispatch.
@@ -336,7 +349,7 @@ export function BatchReports() {
     }, 0);
     const interval = setInterval(() => { void fetchJobs(); void fetchWorkerHealth(); }, 10_000);
     return () => { cancelled = true; clearTimeout(bootstrap); clearInterval(interval); };
-  }, [fetchGmailStatus, fetchJobs, fetchWorkerHealth]);
+  }, [fetchGmailStatus, fetchJobs, fetchOutlookStatus, fetchWorkerHealth]);
 
   function update(id: string, patch: Partial<BatchRow>) {
     setRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row));
@@ -472,13 +485,13 @@ export function BatchReports() {
   async function runMailboxPipeline() {
     // OAuth must be connected before dispatching. This prevents a guaranteed
     // worker failure and makes the required one-time consent explicit.
-    const currentGmail = await fetchGmailStatus();
-    if (!currentGmail?.connected) {
+    const [currentGmail, currentOutlook] = await Promise.all([fetchGmailStatus(), fetchOutlookStatus()]);
+    if (!currentGmail?.connected && !currentOutlook?.connected) {
       setAutoPilotStage("error");
       setAutoPilotDetail(
-        currentGmail?.needsReauthorization
-          ? "Google authorization needs to be renewed. Click Reconnect Gmail first."
-          : "Connect Gmail first, then run Auto-pilot.",
+        currentGmail?.needsReauthorization || currentOutlook?.needsReauthorization
+          ? "A mailbox authorization needs to be renewed. Reconnect the mailbox first."
+          : "Connect Gmail or Outlook first, then run Auto-pilot.",
       );
       return;
     }
@@ -659,14 +672,15 @@ export function BatchReports() {
     </div><aside><span>Safeguard</span><strong>Review before report</strong><p>Ambiguous units or multiple suggestions remain in the review queue. No report is generated until a candidate is selected.</p></aside></div>
     <div className="gmail-dock">
       <div className="gmail-dock-mark"><Mail size={20} /><span>Inbound mailbox</span></div>
-      <div className="gmail-dock-copy"><strong>Scan Gmail inbox and process CSV attachments</strong><small>Auto-pilot starts a background run that reads the connected Gmail mailbox through the Gmail API, generates a Cotality report for every exact address match, and replies to each sender with their reports attached. No upload needed. Runs also happen automatically every 15 minutes.</small></div>
+      <div className="gmail-dock-copy"><strong>Scan a connected mailbox and process CSV attachments</strong><small>Auto-pilot reads the selected Gmail or Outlook mailbox through its OAuth API, generates a Cotality report for every exact address match, and replies to each sender with their reports attached. No upload needed. Runs also happen automatically every 15 minutes.</small></div>
       <div className="gmail-dock-actions">
         {gmail?.connected ? <span className="gmail-connected">Connected {gmail.email ? `as ${gmail.email}` : "to Gmail"}</span> : <a href="/api/gmail/oauth/start" className="gmail-action" aria-disabled={!gmail?.configured}>{gmail?.needsReauthorization ? "Reconnect Gmail" : "Connect Gmail"} <ArrowRight size={14} /></a>}
+        {outlook?.connected ? <span className="gmail-connected">Outlook {outlook.email ? `as ${outlook.email}` : "connected"}</span> : <a href="/api/outlook/oauth/start" className="gmail-action" aria-disabled={!outlook?.configured}>{outlook?.needsReauthorization ? "Reconnect Outlook" : "Connect Outlook"} <ArrowRight size={14} /></a>}
         <button
           className="gmail-action autopilot"
           onClick={() => void runMailboxPipeline()}
-          disabled={dispatching || dispatchConfigured === false || !gmail?.connected}
-          title={dispatchConfigured === false ? "Mailbox runs are not configured on this deployment." : !gmail?.connected ? "Connect Gmail before scanning the inbox." : "Scan the Gmail inbox for CSV attachments"}
+          disabled={dispatching || dispatchConfigured === false || (!gmail?.connected && !outlook?.connected)}
+          title={dispatchConfigured === false ? "Mailbox runs are not configured on this deployment." : (!gmail?.connected && !outlook?.connected) ? "Connect Gmail or Outlook before scanning the inbox." : "Scan the selected mailbox for CSV attachments"}
         >
           {dispatching ? <LoaderCircle className="spin" size={14} /> : <Zap size={14} />}
           Auto-pilot: scan inbox
