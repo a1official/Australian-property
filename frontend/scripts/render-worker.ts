@@ -57,6 +57,7 @@ import { OutlookNeedsReauthorizationError } from "../lib/outlook-oauth";
 import { assertEncryptionKeyConfigured } from "../lib/token-crypto";
 import { createLogger } from "../lib/logger";
 import { generatePropertyPdf, matchAddress } from "../lib/report-pipeline";
+import { generatePropertyPdfDirect, matchAddressDirect } from "../lib/aws-report-pipeline";
 import { classifyFailure } from "../lib/retry-policy";
 import {
   deliverReply,
@@ -295,11 +296,12 @@ export async function discoverMailboxJobsOnce(): Promise<string[]> {
 
 function buildDeps(job: PipelineJob, blobSecret: string, jobLog: ReturnType<typeof createLogger>): WorkerDeps {
   const clientOptions = { baseUrl: config.baseUrl };
+  const direct = Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
   return {
     logger: jobLog,
     readCsv: (pathname) => downloadBlobText(pathname),
-    matchAddress: (address) => matchAddress(address, clientOptions),
-    generateReport: (input) => generatePropertyPdf(input, clientOptions),
+    matchAddress: (address) => direct ? matchAddressDirect(address) : matchAddress(address, clientOptions),
+    generateReport: (input) => direct ? generatePropertyPdfDirect(input) : generatePropertyPdf(input, clientOptions),
     uploadReport: async (input) =>
       uploadReportBlob({ jobId: job.id, secret: blobSecret, filename: input.filename, content: input.content }),
     readReport: (pathname) => downloadBlobBuffer(pathname),
