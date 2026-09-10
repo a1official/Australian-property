@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Parcel Atlas OAuth mailbox report worker
+
+Parameters:
+  WorkerSecretsArn:
+    Type: String
+    Description: ARN of the AWS Secrets Manager secret containing the worker environment values.
+
+Resources:
+  MailboxWorker:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        EntryPoints:
+          - lambda/mailbox-worker.ts
+        Target: es2022
+        Minify: true
+    Properties:
+      CodeUri: .
+      Handler: lambda/mailbox-worker.handler
+      Runtime: nodejs22.x
+      MemorySize: 2048
+      Timeout: 900
+      Architectures:
+        - arm64
+      Policies:
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref WorkerSecretsArn
+      Events:
+        ScheduledMailboxCycle:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Enabled: true
+
+Outputs:
+  MailboxWorkerArn:
+    Description: ARN of the scheduled mailbox worker Lambda.
+    Value: !GetAtt MailboxWorker.Arn

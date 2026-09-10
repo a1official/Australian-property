@@ -524,6 +524,28 @@ async function runCycle(): Promise<{ didWork: boolean }> {
   return { didWork: true };
 }
 
+/**
+ * Run exactly one durable mailbox-worker cycle.
+ *
+ * This is deliberately exported so a serverless scheduler can use precisely
+ * the same job-claiming, checkpoint and retry behaviour as the CLI worker.
+ * It does not poll or leave a process running after the cycle completes.
+ */
+export async function runWorkerOnce(): Promise<{ didWork: boolean; cycles: number }> {
+  log.info("worker.start", { baseUrl: config.baseUrl, once: true, pollIntervalMs: config.pollIntervalMs });
+  assertEncryptionKeyConfigured();
+  await initSchema();
+
+  try {
+    const { didWork } = await runCycle();
+    return { didWork, cycles };
+  } finally {
+    await recordHeartbeat({ workerId: WORKER_ID, status: "stopped", cycles, detail: "Worker invocation exited" });
+    await closePool();
+    log.info("worker.stopped", { cycles });
+  }
+}
+
 async function main(): Promise<void> {
   const once = process.argv.includes("--once");
   log.info("worker.start", { baseUrl: config.baseUrl, once, pollIntervalMs: config.pollIntervalMs });
@@ -568,8 +590,15 @@ async function main(): Promise<void> {
   log.info("worker.stopped", { cycles });
 }
 
-void main().catch(async (error: unknown) => {
-  log.error("worker.fatal", { error: error instanceof Error ? error.message : String(error) });
-  await closePool();
-  process.exit(1);
-});
+// Importing this module from the Lambda handler must not start a polling
+// worker. `tsx scripts/render-worker.ts` continues to execute the CLI entry
+// point unchanged.
+const isCliEntrypoint = /(?:^|[\\/])render-worker\.(?:[cm]?js|tsx?|mts|cts)$/i.test(process.argv[1] ?? "");
+
+if (isCliEntrypoint) {
+  void main().catch(async (error: unknown) => {
+    log.error("worker.fatal", { error: error instanceof Error ? error.message : String(error) });
+    await closePool();
+    process.exit(1);
+  });
+}
