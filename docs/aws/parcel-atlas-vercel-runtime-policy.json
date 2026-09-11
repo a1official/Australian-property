@@ -1,0 +1,27 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeDispatchLambdaOnly",
+      "Effect": "Allow",
+      "Action": "lambda:InvokeFunction",
+      "Resource": [
+        "arn:aws:lambda:ap-southeast-2:716314429284:function:parcel-atlas-dispatch",
+        "arn:aws:lambda:ap-southeast-2:716314429284:function:parcel-atlas-dispatch:*"
+      ]
+    },
+    {
+      "Sid": "ReadDispatchLogsForSchedulerActivityPanel",
+      "Effect": "Allow",
+      "Action": [
+        "logs:FilterLogEvents",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": [
+        "arn:aws:logs:ap-southeast-2:716314429284:log-group:/aws/lambda/parcel-atlas-dispatch",
+        "arn:aws:logs:ap-southeast-2:716314429284:log-group:/aws/lambda/parcel-atlas-dispatch:*",
+        "arn:aws:logs:ap-southeast-2:716314429284:log-group:/aws/lambda/parcel-atlas-dispatch:log-stream:*"
+      ]
+    }
+  ]
+}

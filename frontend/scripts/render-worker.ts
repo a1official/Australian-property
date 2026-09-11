@@ -25,9 +25,11 @@ import * as nodePath from "node:path";
 import process from "node:process";
 
 import {
+  claimJobById,
   claimNextJob,
   closePool,
   extendLease,
+  findJobsByMessageIds,
   getCsvAttachment,
   hasSentReply,
   initSchema,
@@ -50,7 +52,7 @@ import {
 } from "../lib/blob-storage";
 import { CsvValidationError, buildIdempotencyKey, isAllowedSender, validateCsvAttachment } from "../lib/csv-intake";
 import type { GmailApiClient } from "../lib/gmail-api";
-import { discoverCsvAttachments, openMailbox, sendReportReply } from "../lib/gmail-mailbox";
+import { DEFAULT_INBOX_QUERY, discoverCsvAttachments, openMailbox, sendReportReply } from "../lib/gmail-mailbox";
 import { NeedsReauthorizationError } from "../lib/gmail-oauth";
 import { discoverOutlookCsvAttachments, openOutlookMailbox, sendOutlookReportReply, type OutlookGraphClient } from "../lib/outlook-mailbox";
 import { OutlookNeedsReauthorizationError } from "../lib/outlook-oauth";
@@ -58,6 +60,7 @@ import { assertEncryptionKeyConfigured } from "../lib/token-crypto";
 import { createLogger } from "../lib/logger";
 import { generatePropertyPdf, matchAddress } from "../lib/report-pipeline";
 import { generatePropertyPdfDirect, matchAddressDirect } from "../lib/aws-report-pipeline";
+import { enqueueDelivery } from "../lambda/delivery-queue";
 import { classifyFailure } from "../lib/retry-policy";
 import {
   deliverReply,
@@ -181,9 +184,30 @@ async function discoverAndRegister(): Promise<string[]> {
 
   const registered: string[] = [];
   try {
-    const discovered = config.mailboxProvider === "outlook"
-      ? await discoverOutlookCsvAttachments(mailbox as OutlookGraphClient, { maxMessages: config.maxEmails, logger: log })
-      : await discoverCsvAttachments(mailbox as GmailApiClient, { maxMessages: config.maxEmails, logger: log });
+    let discovered;
+    if (config.mailboxProvider === "outlook") {
+      discovered = await discoverOutlookCsvAttachments(mailbox as OutlookGraphClient, { maxMessages: config.maxEmails, logger: log });
+    } else {
+      // Two-pass intake. The inbox query still matches processed mail, so ask
+      // Neon which listed messages are already registered and skip downloading
+      // their attachments. A message whose job is still claimable is re-enqueued
+      // from its recorded id, so skipping the download cannot lose work.
+      const listed = await (mailbox as GmailApiClient).listCandidateMessages(DEFAULT_INBOX_QUERY, config.maxEmails);
+      log.info("gmail.messages.listed", { candidates: listed.length, query: DEFAULT_INBOX_QUERY });
+      const knownJobs = await findJobsByMessageIds(listed.map((message) => message.id));
+      for (const [messageId, job] of knownJobs) {
+        if (job.status === "queued" || job.status === "retryable_failed") {
+          log.info("intake.requeued_known", { jobId: job.id, messageId, status: job.status });
+          registered.push(job.id);
+        }
+      }
+      discovered = await discoverCsvAttachments(mailbox as GmailApiClient, {
+        maxMessages: config.maxEmails,
+        logger: log,
+        candidates: listed,
+        knownMessageIds: new Set(knownJobs.keys()),
+      });
+    }
 
     for (const item of discovered) {
       const itemLog = log.child({ sender: item.sender, fileName: item.filename, messageId: item.messageId });
@@ -247,6 +271,10 @@ async function discoverAndRegister(): Promise<string[]> {
 
       if (!created) {
         itemLog.info("intake.duplicate", { jobId: job.id, status: job.status });
+        // A prior dispatcher invocation can fail after registering the durable
+        // Neon job but before SQS receives its message. Re-enqueue only states
+        // that are safe to claim; never disturb an active/complete job.
+        if (job.status === "queued" || job.status === "retryable_failed") registered.push(job.id);
         continue;
       }
 
@@ -419,6 +447,21 @@ async function processJob(job: PipelineJob): Promise<void> {
       detail: `${rows.filter((row) => row.status === "generated").length} report(s) stored`,
     });
 
+    // Lambda owns delivery. Each completed property becomes its own durable SQS
+    // message, so an unresolved row never withholds a completed report.
+    if (process.env.AWS_LAMBDA_FUNCTION_NAME && process.env.DELIVERY_QUEUE_URL) {
+      const generated = rows.filter((row) => row.status === "generated" && row.blob_pathname);
+      await Promise.all(generated.map((row) => enqueueDelivery({ jobId: job.id, propertyReportId: row.id })));
+      await transitionJob({
+        jobId: job.id,
+        status: "completed",
+        workerId: WORKER_ID,
+        detail: `${generated.length} report(s) queued for individual email delivery`,
+        releaseLease: true,
+      });
+      return;
+    }
+
     if (pendingRows(rows).length) {
       // Some rows are still retryable: defer the reply so the eventual email
       // contains every report rather than a partial set.
@@ -561,6 +604,30 @@ export async function runWorkerOnce(): Promise<{ didWork: boolean; cycles: numbe
     await recordHeartbeat({ workerId: WORKER_ID, status: "stopped", cycles, detail: "Worker invocation exited" });
     await closePool();
     log.info("worker.stopped", { cycles });
+  }
+}
+
+/**
+ * Process the exact job represented by one SQS message. Unlike runWorkerOnce,
+ * this never scans Gmail and therefore cannot consume a different queued job.
+ */
+export async function runQueuedJobOnce(jobId: string): Promise<{ didWork: boolean; cycles: number }> {
+  log.info("queue_worker.start", { jobId });
+  await initSchema();
+  try {
+    cycles += 1;
+    const claimed = await claimJobById(jobId, WORKER_ID, config.leaseSeconds);
+    if (!claimed) {
+      log.info("queue_worker.no_claim", { jobId });
+      return { didWork: false, cycles };
+    }
+    await recordHeartbeat({ workerId: WORKER_ID, status: "processing", currentJobId: claimed.id, cycles, detail: "Processing SQS job" });
+    await processJob(claimed);
+    await recordHeartbeat({ workerId: WORKER_ID, status: "idle", cycles, detail: `Finished ${claimed.id}` });
+    return { didWork: true, cycles };
+  } finally {
+    await recordHeartbeat({ workerId: WORKER_ID, status: "stopped", cycles, detail: "Queue worker invocation exited" });
+    await closePool();
   }
 }
 

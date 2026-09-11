@@ -45,7 +45,7 @@ export class GmailApiClient {
     private readonly fetchImpl: FetchLike = fetch,
   ) {}
 
-  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  private async attempt<T>(path: string, init: RequestInit): Promise<T> {
     const response = await this.fetchImpl(`${GMAIL_API_BASE}${path}`, {
       ...init,
       headers: {
@@ -66,10 +66,40 @@ export class GmailApiClient {
     if (!response.ok) {
       // Google error messages can echo request content, so only the status is
       // surfaced.
-      throw new Error(`Gmail API request failed (${response.status}).`);
+      throw Object.assign(new Error(`Gmail API request failed (${response.status}).`), { status: response.status });
     }
     if (!payload) throw new Error("Gmail API returned an unreadable response.");
     return payload;
+  }
+
+  /**
+   * Issues one Gmail request, retrying only when it is safe to do so.
+   *
+   * Reads are retried on a transport error or a 429/5xx, because a DNS or TLS
+   * blip should not fail an entire worker cycle. Writes are never retried: a
+   * `messages/send` that fails at the network layer may already have delivered
+   * mail, and a duplicate email is worse than a surfaced error.
+   */
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const idempotent = (init.method ?? "GET").toUpperCase() === "GET";
+    const maxAttempts = idempotent ? 3 : 1;
+
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.attempt<T>(path, init);
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        const retryable = status === undefined || status === 429 || status >= 500;
+        if (
+          attempt >= maxAttempts ||
+          !retryable ||
+          error instanceof NeedsReauthorizationError
+        ) {
+          throw error;
+        }
+        await new Promise((done) => setTimeout(done, 500 * 2 ** (attempt - 1)));
+      }
+    }
   }
 
   /** Lists candidate message ids only; full bodies are fetched on demand. */

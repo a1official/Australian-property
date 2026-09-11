@@ -1,8 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Parcel Atlas rent-review pipeline. Manual-trigger only: the Vercel frontend
-  calls the dispatch function, which fans out one SQS message per property.
-  No EventBridge or cron is created, by design.
+  Parcel Atlas rent-review pipeline. The Vercel frontend can call the dispatch
+  function directly, and an EventBridge rule also scans the mailbox every two
+  minutes; both paths fan out one SQS message per job. Intake is idempotent, so
+  a scheduled scan cannot duplicate a manual trigger.
 
 Parameters:
   ResourcePrefix:
@@ -314,6 +315,37 @@ Resources:
         MaximumConcurrency: 2
       FunctionResponseTypes:
         - ReportBatchItemFailures
+
+  # Inbox polling is deliberately limited to the dispatcher. Job registration
+  # is idempotent, so a frequent scan cannot create duplicate reports.
+  #
+  # An idle scan costs one Gmail messages.list call: the dispatcher checks the
+  # listed message ids against pipeline_jobs and skips anything already
+  # registered, so no attachment is re-downloaded. That is what makes a
+  # two-minute interval affordable.
+  #
+  # NOTE: the logical name and the resource name still read "every-5-minutes".
+  # The live rule was created outside this template and renaming it would
+  # replace the resource, so the name is retained deliberately and the schedule
+  # expression below is authoritative.
+  MailboxScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ResourcePrefix}-mailbox-every-5-minutes"
+      Description: Scan the connected mailbox and enqueue CSV report jobs every two minutes.
+      ScheduleExpression: rate(2 minutes)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt DispatchFunction.Arn
+          Id: DispatchMailboxScan
+
+  MailboxSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DispatchFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt MailboxScheduleRule.Arn
 
   # ---------------------------------------------------------------------------
   # HTTPS entry point for the Vercel frontend. Authentication is enforced in

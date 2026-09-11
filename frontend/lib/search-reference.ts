@@ -36,6 +36,11 @@ function clampEnv(name: string, fallback: number, minimum: number, maximum: numb
  *
  * Returns null when the payload lacks the fields the report needs, so the
  * caller can fall back rather than build a report from a partial record.
+ *
+ * In particular, this endpoint is entitlement-filtered. It can legitimately
+ * answer 200 with only an id and property type. Treating that as a complete
+ * record suppresses the Search-service fallback, which is where this client
+ * receives the bedrooms/bathrooms/cars, coordinates and signed photo URLs.
  */
 async function loadDirectSummary(id: string): Promise<Record<string, unknown> | null> {
   const response = await corelogicRequest(`/property/au/v1/property/${encodeURIComponent(id)}.json`, { ttlSeconds: 900 });
@@ -76,9 +81,22 @@ async function loadDirectSummary(id: string): Promise<Record<string, unknown> | 
     propertyPhoto: photo,
   };
 
-  // A property type is the minimum needed for similarity scoring; without it
-  // the paged path is still worth trying.
-  return summary.propertyType ? summary : null;
+  const hasConfiguration = [
+    attributes.bedrooms ?? attributes.beds,
+    attributes.bathrooms ?? attributes.baths,
+    attributes.carSpaces ?? attributes.lockUpGarages,
+  ]
+    .some((field) => field !== null && field !== undefined);
+  const directCoordinate = record(property.coordinate);
+  const hasCoordinate = directCoordinate.latitude !== undefined && directCoordinate.longitude !== undefined;
+  const hasLocation =
+    record(record(address.street).locality).id !== undefined &&
+    record(address.street).id !== undefined;
+  const hasPhoto = typeof photo.largePhotoUrl === "string" || typeof photo.mediumPhotoUrl === "string" || typeof photo.thumbnailPhotoUrl === "string";
+
+  // Do not let a type-only response masquerade as a usable dossier. Areas are
+  // intentionally not required here: they remain optional for scoring.
+  return summary.propertyType && hasConfiguration && hasCoordinate && hasLocation && hasPhoto ? summary : null;
 }
 
 export function searchSummaries(payload: unknown): Record<string, unknown>[] {

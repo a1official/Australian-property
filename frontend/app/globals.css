@@ -461,6 +461,16 @@ button, input { font: inherit; } button, a { -webkit-tap-highlight-color: transp
 .durable-job small { color: rgba(255,255,255,.38); font-size: 7px; width: 100%; }
 .durable-job small.durable-job-error { color: #f0a4a4; }
 .durable-job .review-count { color: #fcd34d; }
+.scheduler-activity { background: #142025; border-top: 1px solid rgba(255,255,255,.1); margin: 1px auto 0; max-width: 1310px; padding: 18px 24px 20px; }
+.scheduler-activity .durable-jobs-head > button { align-items: center; background: transparent; border: 1px solid rgba(255,255,255,.22); color: rgba(255,255,255,.75); cursor: pointer; display: inline-flex; font-size: 7px; gap: 7px; letter-spacing: .1em; padding: 7px 11px; text-transform: uppercase; }
+.scheduler-activity-list { display: grid; gap: 5px; list-style: none; margin: 14px 0 0; padding: 0; }
+.scheduler-activity-list li { align-items: center; background: rgba(255,255,255,.04); color: rgba(255,255,255,.74); display: flex; flex-wrap: wrap; font-size: 9px; gap: 10px; padding: 8px 11px; }
+.scheduler-activity-list time { color: rgba(255,255,255,.42); font-variant-numeric: tabular-nums; min-width: 76px; }
+.scheduler-event { border-radius: 99px; font-size: 7px; letter-spacing: .08em; padding: 3px 7px; text-transform: uppercase; }
+.scheduler-event.scheduled,.scheduler-event.completed,.scheduler-event.scan { background: rgba(20,184,166,.18); color: #5eead4; }
+.scheduler-event.manual,.scheduler-event.started { background: rgba(255,255,255,.1); color: rgba(255,255,255,.7); }
+.scheduler-event.registered { background: rgba(217,255,69,.17); color: var(--acid); }
+.scheduler-event.error { background: rgba(239,68,68,.2); color: #fca5a5; }
 .batch-status.completed { background: var(--acid); border-color: var(--acid); color: var(--ink); }
 .batch-status.failed, .batch-status.needs_reauthentication { background: rgba(239,68,68,.2); border-color: rgba(239,68,68,.45); color: #fca5a5; }
 .batch-status.needs_review, .batch-status.retryable_failed { background: rgba(252,211,77,.16); border-color: rgba(252,211,77,.4); color: #fcd34d; }

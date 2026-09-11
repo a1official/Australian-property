@@ -28,7 +28,7 @@ import {
 } from "./gmail-api";
 import {
   NeedsReauthorizationError,
-  readOAuthClientConfig,
+  readOAuthClientCredentials,
   refreshAccessToken,
   type FetchLike,
 } from "./gmail-oauth";
@@ -61,7 +61,9 @@ export async function openMailbox(deps: MailboxDeps): Promise<GmailApiClient> {
     throw new NeedsReauthorizationError("The Gmail authorization was revoked. Reconnect Gmail to continue.");
   }
 
-  const config = readOAuthClientConfig(deps.env ?? process.env);
+  // Refresh-only credentials: the worker never performs a browser redirect, so
+  // requiring GMAIL_REDIRECT_URI here would fail Lambda for an unused value.
+  const config = readOAuthClientCredentials(deps.env ?? process.env);
 
   let refreshToken: string;
   try {
@@ -98,14 +100,40 @@ export async function openMailbox(deps: MailboxDeps): Promise<GmailApiClient> {
  */
 export async function discoverCsvAttachments(
   client: GmailApiClient,
-  options: { query?: string; maxMessages?: number; logger: Logger },
+  options: {
+    query?: string;
+    maxMessages?: number;
+    logger: Logger;
+    /**
+     * Message ids already registered, so their attachments are not downloaded
+     * again. Injected rather than queried here to keep this module free of a
+     * database dependency and testable without Neon.
+     */
+    knownMessageIds?: ReadonlySet<string>;
+    /**
+     * An already-fetched candidate list. The caller needs the ids up front to
+     * resolve `knownMessageIds`, so passing them back avoids a second
+     * messages.list round trip for the same query.
+     */
+    candidates?: Array<{ id: string; threadId: string }>;
+  },
 ): Promise<DiscoveredAttachment[]> {
   const query = options.query ?? DEFAULT_INBOX_QUERY;
-  const candidates = await client.listCandidateMessages(query, options.maxMessages ?? 5);
-  options.logger.info("gmail.messages.listed", { candidates: candidates.length, query });
+  const candidates = options.candidates ?? (await client.listCandidateMessages(query, options.maxMessages ?? 5));
+  if (!options.candidates) options.logger.info("gmail.messages.listed", { candidates: candidates.length, query });
 
   const found: DiscoveredAttachment[] = [];
+  let skipped = 0;
   for (const candidate of candidates) {
+    // The inbox query cannot exclude processed mail, so the same messages match
+    // on every scheduled scan. Skipping a known id here avoids a message fetch
+    // and an attachment download that would only be discarded as a duplicate.
+    if (options.knownMessageIds?.has(candidate.id)) {
+      skipped += 1;
+      options.logger.debug("gmail.message.already_registered", { messageId: candidate.id });
+      continue;
+    }
+
     try {
       // Full bodies are fetched only for listed candidates, not the whole inbox.
       const message = await client.getMessage(candidate.id);
@@ -150,6 +178,7 @@ export async function discoverCsvAttachments(
       });
     }
   }
+  if (skipped) options.logger.info("gmail.messages.skipped_known", { skipped, fetched: found.length });
   return found;
 }
 

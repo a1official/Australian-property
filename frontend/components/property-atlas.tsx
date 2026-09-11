@@ -248,7 +248,7 @@ export function PropertyAtlas() {
     loadingScopes.current.clear();
     try {
       const payload = await responseJson<Profile>(
-        await fetch(`/api/corelogic/properties/${propertyId}`),
+        await fetch(`/api/corelogic/properties/${propertyId}?address=${encodeURIComponent(suggestion.suggestion)}`),
       );
       setProfile(payload);
       loadedScopes.current.add("overview");
@@ -263,7 +263,7 @@ export function PropertyAtlas() {
     setLoadingComparables(true);
     setComparablesError(null);
     try {
-      const payload = await responseJson<Comparables>(await fetch(`/api/corelogic/properties/${propertyId}/comparables`));
+      const payload = await responseJson<Comparables>(await fetch(`/api/corelogic/properties/${propertyId}/comparables?address=${encodeURIComponent(selected?.suggestion || query)}`));
       setComparables(payload);
     } catch (reason) {
       setComparablesError(reason instanceof Error ? reason.message : "Comparable properties could not be loaded.");
@@ -276,7 +276,7 @@ export function PropertyAtlas() {
     if (loadedScopes.current.has(scope) || loadingScopes.current.has(scope)) return;
     loadingScopes.current.add(scope);
     try {
-      const payload = await responseJson<Profile>(await fetch(`/api/corelogic/properties/${propertyId}?scope=${scope}`));
+      const payload = await responseJson<Profile>(await fetch(`/api/corelogic/properties/${propertyId}?scope=${scope}&address=${encodeURIComponent(selected?.suggestion || query)}`));
       setProfile((current) => {
         if (!current || current.propertyId !== propertyId) return current;
         const modules = { ...current.modules, ...payload.modules };

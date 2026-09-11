@@ -1,7 +1,7 @@
 import "server-only";
 
 import { deleteGmailConnection, getGmailConnection } from "@/lib/db";
-import { readOAuthClientConfig, revokeToken } from "@/lib/gmail-oauth";
+import { readOAuthClientCredentials, revokeToken } from "@/lib/gmail-oauth";
 import { createLogger } from "@/lib/logger";
 import { decryptSecret } from "@/lib/token-crypto";
 
@@ -20,7 +20,8 @@ export async function POST() {
 
     if (connection?.refresh_token_encrypted) {
       try {
-        readOAuthClientConfig();
+        // Revocation needs the client credentials only, not a redirect URI.
+        readOAuthClientCredentials();
         await revokeToken(decryptSecret(connection.refresh_token_encrypted));
       } catch {
         // Revocation is best effort. Local removal must still proceed, or a

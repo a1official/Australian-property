@@ -18,6 +18,7 @@ import {
   type GmailPart,
 } from "../lib/gmail-api";
 import { NeedsReauthorizationError } from "../lib/gmail-oauth";
+import { discoverCsvAttachments } from "../lib/gmail-mailbox";
 
 function jsonFetch(status: number, body: unknown): typeof fetch {
   return (async () => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
@@ -211,4 +212,81 @@ test("a non-ASCII subject is RFC 2047 encoded", () => {
     attachments: [{ filename: "r.html", mimeType: "text/html", content: "<html/>" }],
   });
   assert.match(decodeRaw(raw), /Subject: =\?UTF-8\?B\?/);
+});
+
+// ---------------------------------------------------------------------------
+// Intake pre-check: skip messages already registered
+// ---------------------------------------------------------------------------
+
+/**
+ * Records every Gmail path requested so a test can assert that no message or
+ * attachment fetch happened for an already-registered id.
+ */
+function recordingFetch(): { fetchImpl: typeof fetch; paths: string[] } {
+  const paths: string[] = [];
+  const fetchImpl = (async (url: string) => {
+    const path = new URL(url).pathname.replace("/gmail/v1/users/me", "");
+    paths.push(path);
+
+    if (path.startsWith("/messages/") && path.includes("/attachments/")) {
+      return Response.json({ data: Buffer.from("address\n1 Test St").toString("base64url"), size: 20 });
+    }
+    if (path.startsWith("/messages/")) {
+      const id = path.split("/")[2].split("?")[0];
+      return Response.json({
+        id,
+        threadId: `thread-${id}`,
+        payload: {
+          headers: [
+            { name: "From", value: "owner@example.com" },
+            { name: "Subject", value: "Rent review" },
+          ],
+          parts: [{ filename: "batch.csv", mimeType: "text/csv", body: { attachmentId: `att-${id}`, size: 20 } }],
+        },
+      });
+    }
+    return Response.json({ messages: [{ id: "m-old", threadId: "t1" }, { id: "m-new", threadId: "t2" }] });
+  }) as unknown as typeof fetch;
+  return { fetchImpl, paths };
+}
+
+const silentLogger = {
+  child: () => silentLogger,
+  debug: () => undefined,
+  info: () => undefined,
+  warn: () => undefined,
+  error: () => undefined,
+} as unknown as import("../lib/logger").Logger;
+
+test("a known message id is not fetched or downloaded again", async () => {
+  const { fetchImpl, paths } = recordingFetch();
+  const found = await discoverCsvAttachments(new GmailApiClient("token", fetchImpl), {
+    logger: silentLogger,
+    knownMessageIds: new Set(["m-old"]),
+  });
+
+  // Only the new message becomes work.
+  assert.deepEqual(found.map((item) => item.messageId), ["m-new"]);
+  // The expensive calls happened for m-new only; m-old cost nothing.
+  assert.ok(paths.some((path) => path.startsWith("/messages/m-new")));
+  assert.ok(!paths.some((path) => path.startsWith("/messages/m-old")));
+  assert.equal(paths.filter((path) => path.includes("/attachments/")).length, 1);
+});
+
+test("with no known ids every listed message is still processed", async () => {
+  const { fetchImpl, paths } = recordingFetch();
+  const found = await discoverCsvAttachments(new GmailApiClient("token", fetchImpl), { logger: silentLogger });
+
+  assert.deepEqual(found.map((item) => item.messageId).sort(), ["m-new", "m-old"]);
+  assert.equal(paths.filter((path) => path.includes("/attachments/")).length, 2);
+});
+
+test("a supplied candidate list avoids a second messages.list call", async () => {
+  const { fetchImpl, paths } = recordingFetch();
+  await discoverCsvAttachments(new GmailApiClient("token", fetchImpl), {
+    logger: silentLogger,
+    candidates: [{ id: "m-new", threadId: "t2" }],
+  });
+
+  assert.equal(paths.filter((path) => path.startsWith("/messages?")).length, 0);
 });

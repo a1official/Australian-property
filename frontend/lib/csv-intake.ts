@@ -16,7 +16,9 @@ export const MAX_ADDRESS_ROWS = 10;
 export const MAX_ADDRESS_LENGTH = 300;
 export const MAX_OWNER_NAME_LENGTH = 160;
 export const MAX_OWNER_EMAIL_LENGTH = 254;
-export const ALLOWED_CSV_MIME_TYPES = ["text/csv", "application/csv", "text/plain", "application/vnd.ms-excel"];
+// Gmail and some desktop mail clients label ordinary comma-separated files as
+// text/comma-separated-values rather than text/csv.
+export const ALLOWED_CSV_MIME_TYPES = ["text/csv", "text/comma-separated-values", "application/csv", "text/plain", "application/vnd.ms-excel"];
 
 /** Permanent validation problems must never be retried by the worker. */
 export class CsvValidationError extends Error {

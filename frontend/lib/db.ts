@@ -263,6 +263,15 @@ const SCHEMA_STATEMENTS = [
     last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   )`,
+  // A short-lived, database-backed mutex for the report Lambda. AWS SQS event
+  // mappings cannot be configured below two concurrent consumers, while the
+  // Cotality integration must make at most one report request at a time.
+  `CREATE TABLE IF NOT EXISTS pipeline_worker_locks (
+    lock_name TEXT PRIMARY KEY,
+    holder TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  )`,
   `CREATE TABLE IF NOT EXISTS gmail_sessions (
     id TEXT PRIMARY KEY,
     storage_state JSONB NOT NULL,
@@ -318,6 +327,10 @@ const INDEX_STATEMENTS = [
      ON reply_attempts(job_id, property_report_id)
      WHERE status = 'sent' AND property_report_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS idx_pipeline_jobs_claimable ON pipeline_jobs(status, next_run_at)`,
+  // Supports the intake pre-check that skips re-downloading an attachment for a
+  // message already registered. Scanned on every scheduled dispatch, so it must
+  // not be a sequential scan.
+  `CREATE INDEX IF NOT EXISTS idx_pipeline_jobs_message ON pipeline_jobs(message_id) WHERE message_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS idx_job_events_job ON job_events(job_id, created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_property_reports_job ON property_reports(job_id, row_number)`,
 ];
@@ -479,6 +492,35 @@ export async function registerJobWithAttachment(params: {
   });
 }
 
+/**
+ * Looks up jobs already registered for the given mailbox message ids.
+ *
+ * Used to skip re-downloading an attachment that intake has already accepted.
+ * The status is returned as well as the id, because a job that is still
+ * claimable needs re-enqueueing even though its attachment does not need
+ * fetching again.
+ *
+ * One query for the whole batch rather than one per message: the scheduled
+ * dispatcher runs this on every cycle.
+ */
+export async function findJobsByMessageIds(
+  messageIds: string[],
+): Promise<Map<string, { id: string; status: JobStatus }>> {
+  const unique = [...new Set(messageIds.filter(Boolean))];
+  if (!unique.length) return new Map();
+
+  const { rows } = await getPool().query<{ id: string; message_id: string; status: JobStatus }>(
+    `SELECT id, message_id, status FROM pipeline_jobs WHERE message_id = ANY($1::text[])`,
+    [unique],
+  );
+  // Newest first so a re-sent message maps to its most recent job.
+  const found = new Map<string, { id: string; status: JobStatus }>();
+  for (const row of rows) {
+    if (!found.has(row.message_id)) found.set(row.message_id, { id: row.id, status: row.status });
+  }
+  return found;
+}
+
 // ---------------------------------------------------------------------------
 // Leasing
 // ---------------------------------------------------------------------------
@@ -494,7 +536,9 @@ export async function claimNextJob(workerId: string, leaseSeconds = 900): Promis
     const candidate = await client.query<{ id: string; status: JobStatus }>(
       `SELECT id, status FROM pipeline_jobs
         WHERE (
-              (status = ANY($1::text[]) AND (next_run_at IS NULL OR next_run_at <= NOW()))
+              (status = ANY($1::text[])
+               AND (next_run_at IS NULL OR next_run_at <= NOW())
+               AND (lease_expires_at IS NULL OR lease_expires_at < NOW()))
            OR (status IN ('claimed','running','replying') AND lease_expires_at IS NOT NULL AND lease_expires_at < NOW())
         )
         ORDER BY created_at ASC
@@ -524,6 +568,67 @@ export async function claimNextJob(workerId: string, leaseSeconds = 900): Promis
     );
     return claimed.rows[0];
   });
+}
+
+/**
+ * Claim a particular queue-backed job. This prevents an SQS message for one
+ * job from accidentally draining another queued job and losing its message.
+ */
+export async function claimJobById(jobId: string, workerId: string, leaseSeconds = 900): Promise<PipelineJob | null> {
+  return withTransaction(async (client) => {
+    const candidate = await client.query<{ id: string; status: JobStatus }>(
+      `SELECT id, status FROM pipeline_jobs
+        WHERE id = $1
+          AND (
+                (status = ANY($2::text[])
+                 AND (next_run_at IS NULL OR next_run_at <= NOW())
+                 AND (lease_expires_at IS NULL OR lease_expires_at < NOW()))
+             OR (status IN ('claimed','running','replying') AND lease_expires_at IS NOT NULL AND lease_expires_at < NOW())
+          )
+        FOR UPDATE SKIP LOCKED`,
+      [jobId, CLAIMABLE_JOB_STATUSES],
+    );
+    if (!candidate.rows.length) return null;
+
+    const { status } = candidate.rows[0];
+    const claimed = await client.query<PipelineJob>(
+      `UPDATE pipeline_jobs
+          SET status = 'claimed', leased_by = $2, leased_at = NOW(),
+              lease_expires_at = NOW() + ($3 || ' seconds')::interval,
+              attempts = attempts + 1, updated_at = NOW()
+        WHERE id = $1
+        RETURNING *`,
+      [jobId, workerId, String(leaseSeconds)],
+    );
+    await client.query(
+      `INSERT INTO job_events (job_id, from_status, to_status, detail, worker_id)
+       VALUES ($1, $2, 'claimed', $3, $4)`,
+      [jobId, status, `Queue lease held for ${leaseSeconds}s`, workerId],
+    );
+    return claimed.rows[0];
+  });
+}
+
+/** Acquire the global report-worker gate, returning false while another run owns it. */
+export async function acquireWorkerLock(lockName: string, holder: string, leaseSeconds = 780): Promise<boolean> {
+  const { rows } = await getPool().query<{ lock_name: string }>(
+    `INSERT INTO pipeline_worker_locks (lock_name, holder, expires_at, updated_at)
+     VALUES ($1, $2, NOW() + ($3 || ' seconds')::interval, NOW())
+     ON CONFLICT (lock_name) DO UPDATE
+       SET holder = EXCLUDED.holder, expires_at = EXCLUDED.expires_at, updated_at = NOW()
+       WHERE pipeline_worker_locks.expires_at < NOW()
+     RETURNING lock_name`,
+    [lockName, holder, String(leaseSeconds)],
+  );
+  return rows.length === 1;
+}
+
+/** Release only a lock that is still owned by this invocation. */
+export async function releaseWorkerLock(lockName: string, holder: string): Promise<void> {
+  await getPool().query(
+    "DELETE FROM pipeline_worker_locks WHERE lock_name = $1 AND holder = $2",
+    [lockName, holder],
+  );
 }
 
 export async function extendLease(jobId: string, workerId: string, leaseSeconds = 900): Promise<void> {

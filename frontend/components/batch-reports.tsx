@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRight, Check, CircleDashed, Database, FileText, LoaderCircle, Mail, Printer, RefreshCw, Search, Send, Zap } from "lucide-react";
+import { ArrowRight, Check, CircleDashed, Clock3, Database, FileText, LoaderCircle, Mail, Printer, RefreshCw, Search, Send, Zap } from "lucide-react";
 
 type AutoPilotStage =
   | "idle"
@@ -29,6 +29,12 @@ type DurableJob = {
   report_count: number;
   review_count: number;
   created_at: string;
+};
+
+type SchedulerActivity = {
+  at: string;
+  kind: "scheduled" | "manual" | "scan" | "registered" | "completed" | "error" | "started";
+  label: string;
 };
 
 type JobDetail = {
@@ -271,6 +277,9 @@ export function BatchReports() {
   const [dbJobs, setDbJobs] = useState<DurableJob[]>([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [workerHealthy, setWorkerHealthy] = useState<boolean | null>(null);
+  const [schedulerActivity, setSchedulerActivity] = useState<SchedulerActivity[]>([]);
+  const [schedulerActivityAvailable, setSchedulerActivityAvailable] = useState<boolean | null>(null);
+  const [schedulerActivityReason, setSchedulerActivityReason] = useState<string | null>(null);
 
   // Demo-mode job state comes directly from Neon through the read-only API.
   const fetchJobs = useCallback(async () => {
@@ -294,6 +303,27 @@ export function BatchReports() {
       setWorkerHealthy(Boolean(data.healthy));
     } catch {
       setWorkerHealthy(null);
+    }
+  }, []);
+
+  const fetchSchedulerActivity = useCallback(async () => {
+    try {
+      const response = await fetch("/api/pipeline/activity", { cache: "no-store" });
+      const data = await response.json() as { ok?: boolean; reason?: string; events?: SchedulerActivity[] };
+      if (!response.ok || !data.ok || !Array.isArray(data.events)) {
+        // Keep the server's reason: a missing environment variable and a denied
+        // IAM call need different remedies, and previously both were reported as
+        // an access-control problem.
+        setSchedulerActivityReason(data.reason === "not_configured" || data.reason === "access_denied" ? data.reason : "unavailable");
+        setSchedulerActivityAvailable(false);
+        return;
+      }
+      setSchedulerActivity(data.events);
+      setSchedulerActivityReason(null);
+      setSchedulerActivityAvailable(true);
+    } catch {
+      setSchedulerActivityReason("unavailable");
+      setSchedulerActivityAvailable(false);
     }
   }, []);
 
@@ -341,15 +371,16 @@ export function BatchReports() {
       void fetchOutlookStatus();
       void fetchJobs();
       void fetchWorkerHealth();
+      void fetchSchedulerActivity();
       // Disable the mailbox CTA up front if this deployment cannot dispatch.
       void fetch("/api/pipeline/trigger", { cache: "no-store" })
         .then((response) => response.json())
         .then((data: { configured?: boolean }) => { if (!cancelled) setDispatchConfigured(Boolean(data.configured)); })
         .catch(() => { if (!cancelled) setDispatchConfigured(null); });
     }, 0);
-    const interval = setInterval(() => { void fetchJobs(); void fetchWorkerHealth(); }, 10_000);
+    const interval = setInterval(() => { void fetchJobs(); void fetchWorkerHealth(); void fetchSchedulerActivity(); }, 10_000);
     return () => { cancelled = true; clearTimeout(bootstrap); clearInterval(interval); };
-  }, [fetchGmailStatus, fetchJobs, fetchOutlookStatus, fetchWorkerHealth]);
+  }, [fetchGmailStatus, fetchJobs, fetchOutlookStatus, fetchSchedulerActivity, fetchWorkerHealth]);
 
   function update(id: string, patch: Partial<BatchRow>) {
     setRows((current) => current.map((row) => row.id === id ? { ...row, ...patch } : row));
@@ -444,8 +475,9 @@ export function BatchReports() {
     try {
       // Cotality's sandbox is rate-limited. Keep each dossier request ordered
       // as well as the batch itself so a CSV cannot create a small request burst.
-      const profile = await api<unknown>("/api/corelogic/properties/" + row.propertyId, 120_000);
-      const comparables = await api<unknown>("/api/corelogic/properties/" + row.propertyId + "/comparables", 120_000);
+      const query = "?address=" + encodeURIComponent(row.normalizedAddress || row.originalAddress);
+      const profile = await api<unknown>("/api/corelogic/properties/" + row.propertyId + query, 120_000);
+      const comparables = await api<unknown>("/api/corelogic/properties/" + row.propertyId + "/comparables" + query, 120_000);
       const report = await makeReport(row.normalizedAddress || row.originalAddress, profile, comparables);
       update(row.id, { status: "complete", note: "HTML report with embedded images ready.", report });
     } catch (error) {
@@ -505,7 +537,15 @@ export function BatchReports() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reason: "Manual UI Auto-pilot request" }),
       });
-      const payload = await response.json() as { ok?: boolean; error?: string; detail?: string };
+      // A proxy/network failure can return a non-JSON body. Do not surface a
+      // JSON parser error to the operator because it hides the useful status.
+      const rawPayload = await response.text();
+      let payload: { ok?: boolean; error?: string; detail?: string } | null = null;
+      try {
+        payload = JSON.parse(rawPayload) as { ok?: boolean; error?: string; detail?: string };
+      } catch {
+        throw new Error(`The mailbox run could not be started (HTTP ${response.status}).`);
+      }
       if (!response.ok || !payload.ok) throw new Error(payload.error || "The mailbox run could not be started.");
 
       setAutoPilotStage("dispatched");
@@ -750,6 +790,13 @@ export function BatchReports() {
               </div>)}
             </div>
           : <p className="durable-jobs-empty">No jobs recorded yet. Queue a CSV with Auto-pilot or email one to the bot mailbox.</p>}
+    </div>
+    <div className="scheduler-activity">
+      <div className="durable-jobs-head">
+        <div><Clock3 size={17} /><strong>Scheduler activity</strong><span className={`worker-pill ${schedulerActivityAvailable === true ? "ok" : schedulerActivityAvailable === false ? "down" : "unknown"}`}>{schedulerActivityAvailable === true ? "CloudWatch connected" : schedulerActivityAvailable === false ? "CloudWatch unavailable" : "Checking logs"}</span></div>
+        <button onClick={() => void fetchSchedulerActivity()}><RefreshCw size={12} /> Refresh</button>
+      </div>
+      {schedulerActivity.length ? <ul className="scheduler-activity-list">{schedulerActivity.map((event, index) => <li key={`${event.at}-${index}`}><time>{new Date(event.at).toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit", second: "2-digit" })}</time><span className={`scheduler-event ${event.kind}`}>{event.kind}</span><span>{event.label}</span></li>)}</ul> : <p className="durable-jobs-empty">{schedulerActivityAvailable === false ? (schedulerActivityReason === "not_configured" ? "Set AWS_REGION, AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY on this deployment to show scheduler activity." : schedulerActivityReason === "access_denied" ? "This deployment's AWS user cannot read the dispatch log group." : "Scheduler activity could not be read from CloudWatch.") : "No recent scheduler activity yet."}</p>}
     </div>
     {rows.length ? <><div className="batch-stats"><div><span>Rows</span><strong>{rows.length}</strong></div><div><span>Ready</span><strong>{counts.ready || 0}</strong></div><div><span>Review</span><strong>{counts.review || 0}</strong></div><div><span>Completed</span><strong>{complete}</strong></div><button onClick={() => void processBatch()} disabled={!ready || loadingFile}>{ready ? "Generate " + ready + " report" + (ready === 1 ? "" : "s") : "No approved reports"} <ArrowRight size={16} /></button></div>
       <div className="batch-ledger"><div className="batch-ledger-heading"><span>CSV row</span><span>Original input</span><span>Match decision</span><span>Report status</span></div>{rows.map((row) => <article key={row.id}><span className="batch-row-number">{row.rowNumber || "!"}</span><div className="batch-address"><strong>{row.originalAddress || "CSV format error"}</strong>{row.normalizedAddress && row.normalizedAddress !== row.originalAddress ? <small>Normalized: {row.normalizedAddress}</small> : null}</div><div className="batch-match"><span className={"batch-status " + row.status}>{row.status === "complete" || row.status === "ready" ? <Check size={13} /> : row.status === "matching" || row.status === "processing" ? <LoaderCircle className="spin" size={13} /> : <CircleDashed size={13} />}{row.status}</span><p>{row.note}</p>{row.status === "review" ? <div className="batch-suggestions">{row.suggestions.map((suggestion, index) => <button key={String(suggestion.propertyId) + "-" + index} onClick={() => approve(row, suggestion)}><Search size={13} />{suggestion.suggestion}</button>)}</div> : null}</div><div className="batch-output">{row.status === "complete" && row.report ? <><button onClick={() => saveFile("parcel-atlas-" + row.propertyId + ".html", row.report || "")}><FileText size={14} />Download HTML</button><button className="pdf-button" onClick={() => saveAsPdf(row.report || "")}><Printer size={14} />Save as PDF</button></> : row.status === "failed" ? <span className="batch-error">{row.error}</span> : <span>—</span>}</div></article>)}</div>

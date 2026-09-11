@@ -23,14 +23,17 @@ export async function dispatchAwsMailboxRun(reason?: unknown) {
   });
   const response = await client.send(new InvokeCommand({
     FunctionName: config.functionName,
-    InvocationType: "RequestResponse",
+    // Gmail discovery can take longer than Vercel's request budget. The
+    // dispatcher is already durable: it registers jobs in Neon and sends them
+    // to SQS, so there is no benefit in holding the browser connection open.
+    InvocationType: "Event",
     Payload: Buffer.from(JSON.stringify({ source: "vercel", reason: typeof reason === "string" ? reason.slice(0, 200) : undefined })),
   }));
-  if (response.FunctionError) throw new Error("AWS dispatch function failed.");
-  let payload: { ok?: boolean; discovered?: number; error?: string } | null = null;
-  try { payload = JSON.parse(Buffer.from(response.Payload ?? []).toString("utf8")); } catch { /* handled below */ }
-  if (!payload?.ok) throw new Error(payload?.error || "AWS dispatch function returned an invalid response.");
-  return { discovered: Number(payload.discovered ?? 0) };
+  // Lambda returns 202 when it has durably accepted an asynchronous event.
+  // The function result is intentionally not available in this mode; the UI
+  // watches Neon job records for real progress instead of guessing a count.
+  if (response.StatusCode !== 202) throw new Error("AWS did not accept the mailbox run.");
+  return { accepted: true };
 }
 
 export function awsDispatchConfigured(): boolean {

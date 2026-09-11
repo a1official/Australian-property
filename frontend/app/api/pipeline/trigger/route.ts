@@ -15,12 +15,11 @@ export async function POST(request: Request) {
   const body = (await request.json().catch(() => null)) as { reason?: unknown } | null;
 
   try {
-    const result = await dispatchAwsMailboxRun(body?.reason);
+    await dispatchAwsMailboxRun(body?.reason);
     return Response.json(
       {
         ok: true,
         accepted: true,
-        discovered: result.discovered,
         // Say plainly that acceptance is not completion.
         detail:
           "AWS accepted the run. The worker is checking Gmail and processing CSV reports in the background; job status will appear below as Neon records it.",

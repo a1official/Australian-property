@@ -28,9 +28,20 @@ const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
 const REVOKE_ENDPOINT = "https://oauth2.googleapis.com/revoke";
 export const GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 
-export type OAuthClientConfig = {
+/**
+ * Credentials for grants that do not involve a browser redirect.
+ *
+ * Google's `refresh_token` and `revoke` endpoints take only the client id and
+ * secret; `redirect_uri` belongs to the authorization-code exchange. Keeping the
+ * two shapes apart means an unattended worker cannot be blocked by a value it
+ * never sends.
+ */
+export type OAuthClientCredentials = {
   clientId: string;
   clientSecret: string;
+};
+
+export type OAuthClientConfig = OAuthClientCredentials & {
   redirectUri: string;
 };
 
@@ -52,13 +63,37 @@ export class OAuthConfigError extends Error {
   }
 }
 
-export function readOAuthClientConfig(env: NodeJS.ProcessEnv = process.env): OAuthClientConfig {
+/**
+ * Credentials for the refresh and revoke grants.
+ *
+ * Deliberately does not require GMAIL_REDIRECT_URI: the refresh grant does not
+ * send one, so demanding it would fail an unattended worker (such as the
+ * delivery Lambda, whose secret carries no redirect URI) for a value Google
+ * never sees.
+ */
+export function readOAuthClientCredentials(env: NodeJS.ProcessEnv = process.env): OAuthClientCredentials {
   const clientId = runtimeEnv("GMAIL_CLIENT_ID", env);
   const clientSecret = runtimeEnv("GMAIL_CLIENT_SECRET", env);
-  const redirectUri = runtimeEnv("GMAIL_REDIRECT_URI", env);
-  if (!clientId || !clientSecret || !redirectUri) {
+  if (!clientId || !clientSecret) {
+    throw new OAuthConfigError("Gmail OAuth is not configured. Set GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET.");
+  }
+  return { clientId, clientSecret };
+}
+
+/**
+ * Credentials plus the redirect URI, for the interactive authorization-code
+ * flow. Use `readOAuthClientCredentials` for refresh-only paths.
+ *
+ * The redirect URI is derived from PARCEL_ATLAS_BASE_URL when not set
+ * explicitly, since the callback route path is fixed by this application.
+ */
+export function readOAuthClientConfig(env: NodeJS.ProcessEnv = process.env): OAuthClientConfig {
+  const { clientId, clientSecret } = readOAuthClientCredentials(env);
+  const baseUrl = runtimeEnv("PARCEL_ATLAS_BASE_URL", env)?.replace(/\/$/, "");
+  const redirectUri = runtimeEnv("GMAIL_REDIRECT_URI", env) ?? (baseUrl ? `${baseUrl}/api/gmail/oauth/callback` : undefined);
+  if (!redirectUri) {
     throw new OAuthConfigError(
-      "Gmail OAuth is not configured. Set GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET and GMAIL_REDIRECT_URI.",
+      "Gmail OAuth is not configured. Set GMAIL_REDIRECT_URI, or PARCEL_ATLAS_BASE_URL to derive it.",
     );
   }
   return { clientId, clientSecret, redirectUri };
@@ -220,7 +255,8 @@ export async function exchangeCodeForTokens(options: {
 
 export async function refreshAccessToken(options: {
   refreshToken: string;
-  config: OAuthClientConfig;
+  /** Only the client id and secret are sent; a redirect URI is not part of this grant. */
+  config: OAuthClientCredentials;
   fetchImpl?: FetchLike;
 }): Promise<{ accessToken: string; expiresInSeconds: number }> {
   const payload = await postToken(

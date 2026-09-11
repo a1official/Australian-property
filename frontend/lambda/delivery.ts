@@ -111,8 +111,23 @@ async function deliverOne(message: DeliveryMessage): Promise<{ sent: boolean; re
   return { sent: true };
 }
 
-export async function handler(event: SqsEvent) {
+/**
+ * Opens the mailbox and stops.
+ *
+ * Proves in the real Lambda environment that the secret, token decryption and
+ * Google refresh grant all work, which is otherwise only exercised at the
+ * moment an email is about to be sent. Deliberately performs no send.
+ */
+async function selfCheck(): Promise<{ ok: true; mailbox: "authenticated" }> {
+  await openMailbox({ logger: log.child({ mode: "self_check" }) });
+  log.info("delivery.self_check.ok");
+  return { ok: true, mailbox: "authenticated" };
+}
+
+export async function handler(event: SqsEvent & { selfCheck?: boolean }) {
   await configureAwsRuntime();
+  if (event.selfCheck) return selfCheck();
+
   const failures: Array<{ itemIdentifier: string }> = [];
 
   for (const record of event.Records ?? []) {

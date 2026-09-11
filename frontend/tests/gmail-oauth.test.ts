@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { GmailApiClient } from "../lib/gmail-api";
 import {
   GMAIL_SCOPES,
   NeedsReauthorizationError,
@@ -16,6 +17,7 @@ import {
   fetchProfileEmail,
   pkceChallenge,
   readOAuthClientConfig,
+  readOAuthClientCredentials,
   refreshAccessToken,
   verifyOAuthState,
 } from "../lib/gmail-oauth";
@@ -30,9 +32,18 @@ function jsonFetch(status: number, body: unknown): typeof fetch {
   return (async () => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
 }
 
-test("configuration requires all three OAuth values", () => {
+test("the authorization-code configuration requires a redirect target", () => {
   assert.throws(
     () => readOAuthClientConfig({ GMAIL_CLIENT_ID: "only-id" } as unknown as NodeJS.ProcessEnv),
+    OAuthConfigError,
+  );
+  // Client credentials alone are not enough for the interactive flow.
+  assert.throws(
+    () =>
+      readOAuthClientConfig({
+        GMAIL_CLIENT_ID: CONFIG.clientId,
+        GMAIL_CLIENT_SECRET: CONFIG.clientSecret,
+      } as unknown as NodeJS.ProcessEnv),
     OAuthConfigError,
   );
   const config = readOAuthClientConfig({
@@ -41,6 +52,52 @@ test("configuration requires all three OAuth values", () => {
     GMAIL_REDIRECT_URI: CONFIG.redirectUri,
   } as unknown as NodeJS.ProcessEnv);
   assert.equal(config.clientId, CONFIG.clientId);
+});
+
+test("the redirect URI is derived from the base URL when not set explicitly", () => {
+  const config = readOAuthClientConfig({
+    GMAIL_CLIENT_ID: CONFIG.clientId,
+    GMAIL_CLIENT_SECRET: CONFIG.clientSecret,
+    PARCEL_ATLAS_BASE_URL: "https://australian-property.vercel.app/",
+  } as unknown as NodeJS.ProcessEnv);
+  assert.equal(config.redirectUri, "https://australian-property.vercel.app/api/gmail/oauth/callback");
+});
+
+test("refresh-only credentials do not require a redirect URI", () => {
+  // The delivery Lambda's secret carries no GMAIL_REDIRECT_URI. Requiring one
+  // here previously failed every unattended send for a value Google never sees.
+  const credentials = readOAuthClientCredentials({
+    GMAIL_CLIENT_ID: CONFIG.clientId,
+    GMAIL_CLIENT_SECRET: CONFIG.clientSecret,
+  } as unknown as NodeJS.ProcessEnv);
+  assert.equal(credentials.clientId, CONFIG.clientId);
+  assert.equal(credentials.clientSecret, CONFIG.clientSecret);
+
+  assert.throws(
+    () => readOAuthClientCredentials({ GMAIL_CLIENT_ID: CONFIG.clientId } as unknown as NodeJS.ProcessEnv),
+    OAuthConfigError,
+  );
+});
+
+test("the refresh grant sends no redirect_uri", async () => {
+  let sent = "";
+  const fetchImpl = (async (_url: string, init: RequestInit) => {
+    sent = String(init.body);
+    return new Response(JSON.stringify({ access_token: "fresh", expires_in: 3599 }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+
+  const result = await refreshAccessToken({
+    refreshToken: "stored-refresh-token",
+    config: { clientId: CONFIG.clientId, clientSecret: CONFIG.clientSecret },
+    fetchImpl,
+  });
+
+  assert.equal(result.accessToken, "fresh");
+  assert.ok(sent.includes("grant_type=refresh_token"));
+  assert.ok(!sent.includes("redirect_uri"));
 });
 
 test("the minimal Gmail and identity scopes are requested", () => {
@@ -194,4 +251,51 @@ test("a generic token failure does not claim reauthorization is needed", async (
     () => refreshAccessToken({ refreshToken: "t", config: CONFIG, fetchImpl: jsonFetch(500, { error: "backend_error" }) }),
     (error: unknown) => error instanceof Error && !(error instanceof NeedsReauthorizationError),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Transport resilience
+// ---------------------------------------------------------------------------
+
+test("a transient transport error on a read is retried", async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    // Mirrors the intermittent "fetch failed" seen against Gmail: no HTTP
+    // status, just a dropped connection.
+    if (calls === 1) throw new TypeError("fetch failed");
+    return new Response(JSON.stringify({ messages: [{ id: "m1", threadId: "t1" }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+
+  const messages = await new GmailApiClient("token", fetchImpl).listCandidateMessages("has:attachment", 5);
+  assert.equal(calls, 2);
+  assert.deepEqual(messages, [{ id: "m1", threadId: "t1" }]);
+});
+
+test("a send is never retried, so a blip cannot duplicate an email", async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    throw new TypeError("fetch failed");
+  }) as unknown as typeof fetch;
+
+  await assert.rejects(() => new GmailApiClient("token", fetchImpl).sendMessage("raw-mime"));
+  assert.equal(calls, 1);
+});
+
+test("a rejected access token is surfaced immediately rather than retried", async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ error: { message: "invalid" } }), { status: 401 });
+  }) as unknown as typeof fetch;
+
+  await assert.rejects(
+    () => new GmailApiClient("stale", fetchImpl).listCandidateMessages("has:attachment", 5),
+    NeedsReauthorizationError,
+  );
+  assert.equal(calls, 1);
 });
